@@ -480,6 +480,8 @@ endif()
 
 list(APPEND MI_DEPEND png jpeg)
 
+# list(APPEND MI_DEPEND nanovdb)
+
 if (WIN32)
 list(APPEND MI_DEPEND zlib)
 endif()

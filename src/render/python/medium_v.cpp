@@ -20,6 +20,10 @@ public:
         PYBIND11_OVERRIDE_PURE(UnpolarizedSpectrum, Medium, get_majorant, mi, active);
     }
 
+    UnpolarizedSpectrum get_control_sigma_t(const MediumInteraction3f &mi, Mask active = true) const override {
+        PYBIND11_OVERRIDE_PURE(UnpolarizedSpectrum, Medium, get_control_sigma_t, mi, active);
+    }
+
     std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>
     get_scattering_coefficients(const MediumInteraction3f &mi, Mask active = true) const override {
         using Return = std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>;

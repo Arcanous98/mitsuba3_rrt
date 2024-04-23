@@ -64,7 +64,11 @@ void VolumeGrid<Float, Spectrum>::read(Stream *stream) {
                                  ScalarPoint3f(dims[3], dims[4], dims[5]));
 
     m_max = -dr::Infinity<ScalarFloat>;
+    m_min = dr::Infinity<ScalarFloat>;
+    m_avg = 0.f;
     m_max_per_channel.resize(m_channel_count, -dr::Infinity<ScalarFloat>);
+    m_min_per_channel.resize(m_channel_count, dr::Infinity<ScalarFloat>);
+    m_avg_per_channel.resize(m_channel_count, 0.f);
 
     m_data = std::unique_ptr<ScalarFloat[]>(new ScalarFloat[size * m_channel_count]);
     size_t k = 0;
@@ -74,18 +78,36 @@ void VolumeGrid<Float, Spectrum>::read(Stream *stream) {
             stream->read(val);
             m_data[k] = val;
             m_max     = dr::maximum(m_max, val);
+            m_min     = dr::minimum(m_max, val);
+            m_avg     += val;
             m_max_per_channel[j] = dr::maximum(m_max_per_channel[j], val);
+            m_min_per_channel[j] = dr::minimum(m_min_per_channel[j], val);
+            m_avg_per_channel[j] += val;
             ++k;
         }
     }
-    Log(Debug, "Loaded grid volume data from file: dimensions %s, max value %f",
-        m_size, m_max);
+    m_avg = m_avg / k;
+    for (size_t j = 0; j < m_channel_count; ++j) {
+        m_avg_per_channel[j] /= size;
+    }
+    Log(Debug, "Loaded grid volume data from file: dimensions %s, max value %f, min value %f, avg value %f",
+        m_size, m_max, m_min, m_avg);
 }
 
 MI_VARIANT
 void VolumeGrid<Float, Spectrum>::max_per_channel(ScalarFloat *out) const {
     for (size_t i=0; i<m_channel_count; ++i)
         out[i] = m_max_per_channel[i];
+}
+MI_VARIANT
+void VolumeGrid<Float, Spectrum>::min_per_channel(ScalarFloat *out) const {
+    for (size_t i=0; i<m_channel_count; ++i)
+        out[i] = m_min_per_channel[i];
+}
+MI_VARIANT
+void VolumeGrid<Float, Spectrum>::avg_per_channel(ScalarFloat *out) const {
+    for (size_t i=0; i<m_channel_count; ++i)
+        out[i] = m_avg_per_channel[i];
 }
 
 MI_VARIANT

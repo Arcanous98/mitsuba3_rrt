@@ -1,17 +1,19 @@
 #pragma once
 
+#include <drjit/vcall.h>
 #include <mitsuba/core/object.h>
 #include <mitsuba/core/spectrum.h>
 #include <mitsuba/core/traits.h>
 #include <mitsuba/render/fwd.h>
-#include <drjit/vcall.h>
+#include <mitsuba/render/volume.h>
+#include <mitsuba/render/sampler.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
 template <typename Float, typename Spectrum>
 class MI_EXPORT_LIB Medium : public Object {
 public:
-    MI_IMPORT_TYPES(PhaseFunction, Sampler, Scene, Texture);
+    MI_IMPORT_TYPES(PhaseFunction, MediumPtr, Sampler, Scene, Texture, Volume);
 
     /// Intersects a ray with the medium's bounding box
     virtual std::tuple<Mask, Float, Float>
@@ -21,6 +23,56 @@ public:
     virtual UnpolarizedSpectrum
     get_majorant(const MediumInteraction3f &mi,
                  Mask active = true) const = 0;
+    /**
+     * Pre-computes quantities needed for a DDA traversal of the given grid.
+     *
+     * Returns (initial t, tmax, tdelta).
+     */
+    std::tuple<Float, Vector3f, Vector3f>
+    prepare_dda_traversal(const Volume *majorant_grid, const Ray3f &ray,
+                          Float mint, Float maxt, Mask active) const;
+
+    virtual UnpolarizedSpectrum
+    get_control_sigma_t(const MediumInteraction3f &mi,
+                 Mask active = true) const = 0;
+
+    /**
+     * Returns the current majorant supergrid resolution factor
+     * w.r.t. the sigma_t grid resolution.
+     */
+    MI_INLINE size_t majorant_resolution_factor() const {
+        return m_majorant_resolution_factor;
+    }
+    /**
+     * Set the majorant supergrid resolution factor
+     * w.r.t. the sigma_t grid resolution.
+     * One should call \ref parameters_changed() to ensure
+     * that the supergrid is regenerated.
+     */
+    MI_INLINE void set_majorant_resolution_factor(size_t factor) {
+        m_majorant_resolution_factor = factor;
+    }
+
+    /// Returns a reference to the majorant supegrid, if any
+    MI_INLINE ref<Volume> majorant_grid() const {
+        return m_majorant_grid;
+    }
+    // /// Returns a reference to the medium sampler
+    // MI_INLINE ref<Sampler> medium_sampler() const {
+    //     return m_medium_sampler;
+    // }
+    /// Return true if a majorant supergrid is available.
+    MI_INLINE bool has_majorant_grid() const {
+        return (bool) m_majorant_grid;
+    }
+
+    /// Return the size of a voxel in the majorant grid, if any
+    MI_INLINE Vector3f majorant_grid_voxel_size() const {
+        if (m_majorant_grid)
+            return m_majorant_grid->voxel_size();
+        else
+            return dr::zeros<Vector3f>();
+    }
 
     /// Returns the medium coefficients Sigma_s, Sigma_n and Sigma_t evaluated
     /// at a given MediumInteraction mi
@@ -70,6 +122,25 @@ public:
                            const SurfaceInteraction3f &si,
                            Mask active) const;
 
+     /**
+     * Similar to \ref sample_interaction, but ensures that a real interaction
+     * is sampled.
+     */
+    MediumInteraction3f sample_interaction_real(const Ray3f &ray, Sampler *sampler, Mask active) const;
+    
+    MediumInteraction3f sample_interaction_real_super(const Ray3f &ray, UInt32 v0, UInt32 v1, Mask active) const;
+
+    /**
+     * Compute the ray-medium overlap range and prepare a
+     * medium interaction to be filled by a sampling routine.
+     * Exposed as part of the API to enable testing.
+     */
+    std::tuple<MediumInteraction3f, Float, Float, Mask>
+    prepare_interaction_sampling(const Ray3f &ray, Mask active) const;
+
+    std::pair<MediumInteraction3f, UnpolarizedSpectrum>
+    integrate_tr(const Ray3f &ray, UInt32 v0, UInt32 v1, uint32_t estimator_selector, Mask active) const;
+
     /// Return the phase function of this medium
     MI_INLINE const PhaseFunction *phase_function() const {
         return m_phase_function.get();
@@ -104,10 +175,22 @@ protected:
     Medium();
     Medium(const Properties &props);
     virtual ~Medium();
+    static Float extract_channel(Spectrum value, UInt32 channel);
 
 protected:
     ref<PhaseFunction> m_phase_function;
     bool m_sample_emitters, m_is_homogeneous, m_has_spectral_extinction;
+
+    size_t m_majorant_resolution_factor;
+    // majorant grid contains control density grid
+    ref<Volume> m_majorant_grid;
+    ref<Volume> m_control_grid;
+    /* Factor to apply to the majorant, helps ensure that we are not using
+     * a majorant that is exactly equal to the max density, which can be
+     * problematic for Path Replay. */
+    ScalarFloat m_majorant_factor;
+    /// 
+    ScalarFloat m_control_density;
 
     /// Identifier (if available)
     std::string m_id;
@@ -126,10 +209,15 @@ DRJIT_VCALL_TEMPLATE_BEGIN(mitsuba::Medium)
     DRJIT_VCALL_GETTER(is_homogeneous, bool)
     DRJIT_VCALL_GETTER(has_spectral_extinction, bool)
     DRJIT_VCALL_METHOD(get_majorant)
+    DRJIT_VCALL_METHOD(get_control_sigma_t)
     DRJIT_VCALL_METHOD(intersect_aabb)
     DRJIT_VCALL_METHOD(sample_interaction)
+    DRJIT_VCALL_METHOD(sample_interaction_real)
+    DRJIT_VCALL_METHOD(sample_interaction_real_super)
     DRJIT_VCALL_METHOD(transmittance_eval_pdf)
+    DRJIT_VCALL_METHOD(integrate_tr)
     DRJIT_VCALL_METHOD(get_scattering_coefficients)
+    DRJIT_VCALL_METHOD(prepare_interaction_sampling)
 DRJIT_VCALL_TEMPLATE_END(mitsuba::Medium)
 
 //! @}

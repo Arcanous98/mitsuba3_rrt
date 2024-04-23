@@ -525,8 +525,9 @@ struct MediumInteraction : Interaction<Float_, Spectrum_> {
     /// Incident direction in world frame
     Vector3f wi;
 
-    UnpolarizedSpectrum sigma_s, sigma_n, sigma_t, combined_extinction;
+    UnpolarizedSpectrum sigma_s, sigma_n, sigma_t, combined_extinction, control_sigma_t;
 
+    // EIntegrationMethod tracker;
     /// mint used when sampling the given distance ``t``
     Float mint;
 
@@ -676,6 +677,72 @@ struct PreliminaryIntersection {
 
 // -----------------------------------------------------------------------------
 
+//TODO new DDAInteraction3f for efficient local grid-based majorants
+template <typename Float_, typename Spectrum_>
+struct DDAInteraction : Interaction<Float_, Spectrum_> {
+
+    // =============================================================
+    //! @{ \name Type declarations
+    // =============================================================
+    using Float    = Float_;
+    using Spectrum = Spectrum_;
+    MI_IMPORT_RENDER_BASIC_TYPES()
+    MI_IMPORT_OBJECT_TYPES()
+    using Index = typename CoreAliases::UInt32;
+
+    // Make parent fields/functions visible
+    MI_IMPORT_BASE(Interaction, t, time, wavelengths, p, n, is_valid)
+    //! @}
+    // =============================================================
+
+
+    // =============================================================
+    //! @{ \name Fields
+    // =============================================================
+
+    /// Pointer to the associated medium
+    MediumPtr medium = nullptr;
+
+    /// Shading frame
+    Frame3f sh_frame;
+
+    /// Incident direction in world frame
+    Vector3f wi;
+
+    Ray3f ray;
+
+    UnpolarizedSpectrum sigma_t, sigma_c;
+
+    // EIntegrationMethod tracker;
+    /// mint used when sampling the given distance ``t``
+    Float next_crossing_t, delta_t;
+
+    Point3u voxel, voxel_limit;
+
+    //! @}
+    // =============================================================
+
+    // =============================================================
+    //! @{ \name Methods
+    // =============================================================
+
+    /// Convert a local shading-space (defined by ``wi``) vector into world space
+    Vector3f to_world(const Vector3f &v) const {
+        return sh_frame.to_world(v);
+    }
+
+    /// Convert a world-space vector into local shading coordinates (defined by ``wi``)
+    Vector3f to_local(const Vector3f &v) const {
+        return sh_frame.to_local(v);
+    }
+
+    //! @}
+    // =============================================================
+
+    DRJIT_STRUCT(DDAInteraction, t, time, wavelengths, p, n, medium,
+                 sh_frame, wi, ray, sigma_t, sigma_c, next_crossing_t, delta_t,
+                 voxel, voxel_limit)
+};
 template <typename Float, typename Spectrum>
 std::ostream &operator<<(std::ostream &os, const Interaction<Float, Spectrum> &it) {
     if (dr::none(it.is_valid())) {

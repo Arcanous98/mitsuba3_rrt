@@ -1,7 +1,8 @@
 #pragma once
 
-#include <mitsuba/core/spectrum.h>
+#include <drjit/tensor.h>
 #include <mitsuba/core/profiler.h>
+#include <mitsuba/core/spectrum.h>
 #include <mitsuba/core/transform.h>
 #include <mitsuba/render/interaction.h>
 #include <mitsuba/render/shape.h>
@@ -21,6 +22,9 @@ public:
 
     /// Evaluate the volume at the given surface interaction, with color processing.
     virtual UnpolarizedSpectrum eval(const Interaction3f &it, Mask active = true) const;
+
+    virtual std::pair<TensorXf, TensorXf> local_majorants(size_t resolution_factor,
+                                     ScalarFloat value_scale = 1.f);
 
     /// Evaluate this volume as a single-channel quantity.
     virtual Float eval_1(const Interaction3f &it, Mask active = true) const;
@@ -51,6 +55,8 @@ public:
 
     /// Returns the maximum value of the volume over all dimensions.
     virtual ScalarFloat max() const;
+    virtual ScalarFloat avg() const;
+    virtual ScalarFloat min() const;
 
     /**
      * \brief In the case of a multi-channel volume, this function returns
@@ -59,10 +65,18 @@ public:
      * Pointer allocation/deallocation must be performed by the caller.
      */
     virtual void max_per_channel(ScalarFloat *out) const;
+    virtual void avg_per_channel(ScalarFloat *out) const;
+    virtual void min_per_channel(ScalarFloat *out) const;
 
     /// Returns the bounding box of the volume
     ScalarBoundingBox3f bbox() const { return m_bbox; }
 
+    /// Returns the local to world transform
+    ScalarTransform4f world_transform() const {
+        return m_to_local.inverse();
+    }
+    /// If applicable, returns the dimensions of one grid cell in world space.
+    ScalarVector3f voxel_size() const;
     /**
      * \brief Returns the resolution of the volume, assuming that it is based
      * on a discrete representation.

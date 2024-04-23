@@ -334,6 +334,20 @@ set(RGB2SPEC_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/rgb2spec PARENT_SCOPE)
 set_target_properties(rgb2spec rgb2spec_opt rgb2spec_opt_run PROPERTIES FOLDER "dependencies/rgb2spec")
 
 # ----------------------------------------------------------
+#  NanoVDB
+# ----------------------------------------------------------
+
+# # build nanovdb
+# add_subdirectory(openvdb/nanovdb/nanovdb)
+# # set(TBB_INCLUDEDIR "C:\Program Files (x86)\Intel\oneAPI\tbb\2021.12\include")
+# # set(TBB_LIBRARYDIR "C:\Program Files (x86)\Intel\oneAPI\tbb\2021.12\lib")
+# # set(BLOSC_LIBRARY "C:\Program Files (x86)\blosc\lib")
+# # set(BLOSC_INCLUDE_DIR "C:\Program Files (x86)\blosc\include")
+
+# set(NANOVDB_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/openvdb/nanovdb PARENT_SCOPE)
+# set_property(TARGET nanovdb PROPERTY FOLDER "dependencies")
+
+# ----------------------------------------------------------
 #  Fast floating point parser (interface library)
 # ----------------------------------------------------------
 

@@ -475,6 +475,8 @@ protected:
 protected:
     uint32_t m_max_depth;
     uint32_t m_rr_depth;
+    uint32_t m_est;
+    uint32_t m_sampler;
 };
 
 /** \brief Abstract adjoint integrator that performs Monte Carlo sampling

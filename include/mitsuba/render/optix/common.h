@@ -1,7 +1,7 @@
 #pragma once
 
 #ifdef __CUDACC__
-# include <optix.h>
+# include <../../../../../../ProgramData/NVIDIA Corporation/OptiX SDK 7.6.0/include/optix.h>
 #else
 # include <mitsuba/render/optix_api.h>
 #endif

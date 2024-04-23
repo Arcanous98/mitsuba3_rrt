@@ -16,6 +16,12 @@ MI_VARIANT Volume<Float, Spectrum>::Volume(const Properties &props) {
     update_bbox();
 }
 
+MI_VARIANT std::pair<typename Volume<Float, Spectrum>::TensorXf,
+                      typename Volume<Float, Spectrum>::TensorXf>
+Volume<Float, Spectrum>::local_majorants(size_t /*resolution_factor*/, ScalarFloat /*value_scale*/) {
+    NotImplementedError("local_majorants");
+}
+
 MI_VARIANT typename Volume<Float, Spectrum>::UnpolarizedSpectrum
 Volume<Float, Spectrum>::eval(const Interaction3f &, Mask) const {
     NotImplementedError("eval");
@@ -50,15 +56,39 @@ Volume<Float, Spectrum>::eval_gradient(const Interaction3f & /*it*/, Mask /*acti
 
 MI_VARIANT typename Volume<Float, Spectrum>::ScalarFloat
 Volume<Float, Spectrum>::max() const { NotImplementedError("max"); }
+MI_VARIANT typename Volume<Float, Spectrum>::ScalarFloat
+Volume<Float, Spectrum>::min() const { NotImplementedError("min"); }
+MI_VARIANT typename Volume<Float, Spectrum>::ScalarFloat
+Volume<Float, Spectrum>::avg() const { NotImplementedError("avg"); }
 
 MI_VARIANT void
 Volume<Float, Spectrum>::max_per_channel(ScalarFloat * /*out*/) const {
     NotImplementedError("max_per_channel");
 }
+MI_VARIANT void
+Volume<Float, Spectrum>::min_per_channel(ScalarFloat * /*out*/) const {
+    NotImplementedError("min_per_channel");
+}
+MI_VARIANT void
+Volume<Float, Spectrum>::avg_per_channel(ScalarFloat * /*out*/) const {
+    NotImplementedError("avg_per_channel");
+}
 
 MI_VARIANT typename Volume<Float, Spectrum>::ScalarVector3i
 Volume<Float, Spectrum>::resolution() const {
     return ScalarVector3i(1, 1, 1);
+}
+
+MI_VARIANT typename Volume<Float, Spectrum>::ScalarVector3f
+Volume<Float, Spectrum>::voxel_size() const {
+    // Extract the scale from the to_world matrix, assuming an affine transformation.
+    ScalarTransform4f to_world = m_to_local.inverse();
+    ScalarVector3f scale(
+        dr::norm(to_world.matrix.x()),
+        dr::norm(to_world.matrix.y()),
+        dr::norm(to_world.matrix.z())
+    );
+    return dr::rcp(ScalarVector3f(resolution())) * scale;
 }
 
 //! @}

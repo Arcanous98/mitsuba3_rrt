@@ -2,7 +2,8 @@ mts_include_folder = ../../include
 mts_shape_folder   = ../../src/shapes/optix
 mts_optix_main     = ../../src/render/optix/optix_rt.cu
 
-OPTIX_PATH := $(or $(OPTIX_PATH),/opt/optix/include/)
+OPTIX_PATH := $(../../../../../../ProgramData/NVIDIA Corporation/OptiX SDK 7.6.0/include/)
+# OPTIX_PATH := $(or $(OPTIX_PATH),/opt/optix/include/)
 
 all: optix_rt.ptx
 

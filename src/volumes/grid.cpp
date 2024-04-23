@@ -1,3 +1,6 @@
+#include <drjit/dynamic.h>
+#include <drjit/tensor.h>
+#include <drjit/texture.h>
 #include <mitsuba/core/fresolver.h>
 #include <mitsuba/core/properties.h>
 #include <mitsuba/core/spectrum.h>
@@ -6,8 +9,6 @@
 #include <mitsuba/render/srgb.h>
 #include <mitsuba/render/volume.h>
 #include <mitsuba/render/volumegrid.h>
-#include <drjit/dynamic.h>
-#include <drjit/texture.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -207,26 +208,59 @@ public:
                     Throw("Property \"grid\" must be a VolumeGrid instance.");
                 res = volume_grid->size();
                 channel_count = volume_grid->channel_count();
+                m_volume_grid = volume_grid;
             } else if(props.has_property("data")) {
                 tensor = props.tensor<TensorXf>("data");
                 if (tensor->ndim() != 3 && tensor->ndim() != 4)
                     Throw("Tensor->has %ul dimensions. Expected 3 or 4", tensor->ndim());
                 res = { (uint32_t) tensor->shape(2), (uint32_t) tensor->shape(1), (uint32_t) tensor->shape(0) };
                 channel_count = tensor->ndim() == 4 ? tensor->shape(3) : 1;
+                // if (channel_count != 1 && channel_count != 3 && channel_count != 6)
+                //     Throw("Tensor shape at index 3 is %lu invalid. Only volumes with 1, 3 or 6 "
+                //           "channels are supported!", to_string(), channel_count);
+            } else if(props.has_property("supervoxels_data")) { 
+                // --- Getting grid data directly from the properties
+                // Note: we expect the tensor data to be directly given
+                // with the correct data layout, i.e. (Z, Y, X, C).
+                const void *ptr = props.pointer("supervoxels_data");
+                const TensorXf *data = (TensorXf *) ptr;
+                const auto &shape = data->shape();
 
-                if (channel_count != 1 && channel_count != 3 && channel_count != 6)
-                    Throw("Tensor shape at index 3 is %lu invalid. Only volumes with 1, 3 or 6 "
-                          "channels are supported!", to_string(), channel_count);
+                if (!props.get<bool>("raw", true))
+                    Throw("Passing grid data directly implies raw = true");
+                if (props.get<bool>("use_grid_bbox", false))
+                    Throw("Passing grid data directly implies use_grid_bbox = false");
+                if (data->ndim() != 4)
+                    Throw("The given \"data\" tensor must have 4 dimensions, found %s", data->ndim());
+
+                // Initialize the rest of the fields from the given data
+                // TODO: initialize it properly if it's really needed
+                m_volume_grid = new VolumeGrid(
+                    ScalarVector3u(shape[2], shape[1], shape[0]), shape[3]);
+                /* TODO: better syntax for this */ {
+                    Float tmp = dr::max(data->array());
+                    if constexpr (dr::is_jit_v<Float>)
+                        m_volume_grid->set_max(tmp[0]);
+                    else
+                        m_volume_grid->set_max(tmp);
+                }
+                // Copy data over from Tensor to VolumeGrid
+                using HostFloat  = dr::DynamicArray<ScalarFloat>;
+                using HostUInt32 = dr::uint32_array_t<HostFloat>;
+                const HostFloat host_data = dr::migrate(data->array(), AllocType::Host);
+                dr::sync_thread();
+                dr::scatter(m_volume_grid->data(), host_data, dr::arange<HostUInt32>(host_data.size()));
+                dr::eval(m_volume_grid->data());
+                dr::sync_thread();
             } else {
                 FileResolver *fs = Thread::thread()->file_resolver();
                 fs::path file_path = fs->resolve(props.string("filename"));
                 if (!fs::exists(file_path))
                     Log(Error, "\"%s\": file does not exist!", file_path);
-                volume_grid = new VolumeGrid(file_path);
-                res = volume_grid->size();
-                channel_count = volume_grid->channel_count();
+                m_volume_grid = new VolumeGrid(file_path);
+                res = m_volume_grid->size();
+                channel_count = m_volume_grid->channel_count();
             }
-
             ScalarUInt32 size = dr::prod(res);
 
             // Apply spectral conversion if necessary
@@ -236,7 +270,7 @@ public:
                     Throw("Spectral conversion of tensor input is not supported "
                           "and requires a volume grid");
 
-                ScalarFloat *ptr = volume_grid->data();
+                ScalarFloat *ptr = m_volume_grid->data();
 
                 auto scaled_data =
                     std::unique_ptr<ScalarFloat[]>(new ScalarFloat[size * 4]);
@@ -266,19 +300,6 @@ public:
                 };
                 m_texture = Texture3f(TensorXf(scaled_data.get(), 4, shape),
                                       m_accel, m_accel, filter_mode, wrap_mode);
-            } else if (volume_grid) {
-                size_t shape[4] = {
-                    (size_t) res.z(),
-                    (size_t) res.y(),
-                    (size_t) res.x(),
-                    channel_count
-                };
-                m_texture = Texture3f(TensorXf(volume_grid->data(), 4, shape),
-                                      m_accel, m_accel, filter_mode, wrap_mode);
-                m_max = volume_grid->max();
-                m_max_per_channel.resize(volume_grid->channel_count());
-                volume_grid->max_per_channel(m_max_per_channel.data());
-                m_channel_count = channel_count;
             } else if (tensor) {
                 size_t shape[4] = {
                     (size_t) res.z(),
@@ -289,14 +310,36 @@ public:
                 m_texture = Texture3f(TensorXf(tensor->array(), 4, shape),
                                       m_accel, m_accel, filter_mode, wrap_mode);
                 m_max = (float) dr::max_nested(dr::detach(m_texture.value()));
+                m_min = (float) dr::min_nested(dr::detach(m_texture.value()));
+                m_avg = (float) dr::mean_nested(dr::detach(m_texture.value()));
                 m_channel_count = channel_count;
-            }
+            } else {
+                Log(Debug, "No crash");
+                size_t shape[4] = {
+                    (size_t) res.z(),
+                    (size_t) res.y(),
+                    (size_t) res.x(),
+                    m_volume_grid->channel_count()
+                };
+                m_texture = Texture3f(TensorXf(m_volume_grid->data(), 4, shape),
+                                      m_accel, m_accel, filter_mode, wrap_mode);
+                m_max = m_volume_grid->max();
+                m_min = m_volume_grid->min();
+                m_avg = m_volume_grid->avg();
+                m_max_per_channel.resize(m_volume_grid->channel_count());
+                m_min_per_channel.resize(m_volume_grid->channel_count());
+                m_avg_per_channel.resize(m_volume_grid->channel_count());
+                m_volume_grid->max_per_channel(m_max_per_channel.data());
+                m_volume_grid->min_per_channel(m_min_per_channel.data());
+                m_volume_grid->avg_per_channel(m_avg_per_channel.data());
+                m_channel_count = m_volume_grid->channel_count();
+            } 
         }
 
         if (props.get<bool>("use_grid_bbox", false)) {
             if (tensor)
                 Throw("use_grid_bbox is unsupported with tensor input and requires a volume grid");
-            m_to_local = volume_grid->bbox_transform() * m_to_local;
+            m_to_local = m_volume_grid->bbox_transform() * m_to_local;
             update_bbox();
         }
 
@@ -428,10 +471,20 @@ public:
     }
 
     ScalarFloat max() const override { return m_max; }
+    ScalarFloat min() const override { return m_min; }
+    ScalarFloat avg() const override { return m_avg; }
 
     void max_per_channel(ScalarFloat *out) const override {
         for (size_t i=0; i<m_max_per_channel.size(); ++i)
             out[i] = m_max_per_channel[i];
+    }
+    void min_per_channel(ScalarFloat *out) const override {
+        for (size_t i=0; i<m_min_per_channel.size(); ++i)
+            out[i] = m_min_per_channel[i];
+    }
+    void avg_per_channel(ScalarFloat *out) const override {
+        for (size_t i=0; i<m_avg_per_channel.size(); ++i)
+            out[i] = m_avg_per_channel[i];
     }
 
     ScalarVector3i resolution() const override {
@@ -545,6 +598,102 @@ protected:
         }
     }
 
+    std::pair<TensorXf, TensorXf> local_majorants(size_t resolution_factor, ScalarFloat value_scale) override {
+        MI_IMPORT_TYPES()
+        using Value   = mitsuba::DynamicBuffer<Float>;
+        using Index   = mitsuba::DynamicBuffer<UInt32>;
+        using Index3i = mitsuba::Vector<mitsuba::DynamicBuffer<Int32>, 3>;
+
+        // if (m_accel)
+        //     NotImplementedError("local_majorants() with m_accel");
+
+        if (m_texture.shape()[3] != 1)
+            NotImplementedError("local_majorants() when Channels != 1");
+
+        if constexpr (dr::is_jit_v<Float>) {
+            dr::eval(m_texture.value());
+            dr::sync_thread();
+        }
+
+        // This is the real (user-facing) resolution, but recall
+        // that the layout in memory is (Z, Y, X, C).
+        const ScalarVector3i full_resolution = resolution();
+        if ((full_resolution.x() % resolution_factor) != 0 ||
+            (full_resolution.y() % resolution_factor) != 0 ||
+            (full_resolution.z() % resolution_factor) != 0) {
+            Throw("Supergrid construction: grid resolution %s must be divisible by %s",
+                full_resolution, resolution_factor);
+        }
+        const ScalarVector3i resolution(
+            full_resolution.x() / resolution_factor,
+            full_resolution.y() / resolution_factor,
+            full_resolution.z() / resolution_factor
+        );
+
+        Log(Debug, "Constructing supergrid of resolution %s from full grid of resolution %s",
+            resolution, full_resolution);
+        size_t n = dr::prod(resolution);
+        Value result = dr::full<Value>(-dr::Infinity<Float>, n);
+        Value mean_result = dr::zeros<Value>(n);
+
+        // Z is the slowest axis, X is the fastest.
+        auto [Z, Y, X] = dr::meshgrid(
+            dr::arange<Index>(resolution.z()), dr::arange<Index>(resolution.y()),
+            dr::arange<Index>(resolution.x()), /*index_xy*/ false);
+        Index3i cell_indices = resolution_factor * Index3i(X, Y, Z);
+
+        // We have to include all values that participate in interpolated
+        // lookups if we want the true maximum over a region.
+        int32_t begin_offset, end_offset;
+        switch (m_texture.filter_mode()) {
+            case dr::FilterMode::Nearest: {
+                begin_offset = 0;
+                end_offset = resolution_factor;
+                break;
+            }
+            case dr::FilterMode::Linear: {
+                begin_offset = -1;
+                end_offset = resolution_factor + 1;
+                break;
+            }
+        };
+
+        Value scaled_data = value_scale * dr::detach(m_texture.value());
+
+        // TODO: any way to do this without the many operations?
+        for (int32_t dz = begin_offset; dz < end_offset; ++dz) {
+            for (int32_t dy = begin_offset; dy < end_offset; ++dy) {
+                for (int32_t dx = begin_offset; dx < end_offset; ++dx) {
+                    // Ensure valid lookups with clamping
+                    Index3i offset_indices = Index3i(
+                        dr::clamp(cell_indices.x() + dx, 0, full_resolution.x() - 1),
+                        dr::clamp(cell_indices.y() + dy, 0, full_resolution.y() - 1),
+                        dr::clamp(cell_indices.z() + dz, 0, full_resolution.z() - 1)
+                    );
+                    // Linearize indices
+                    const Index idx =
+                        offset_indices.x() +
+                        offset_indices.y() * full_resolution.x() +
+                        offset_indices.z() * full_resolution.x() *
+                            full_resolution.y();
+
+                    Value values =
+                        dr::gather<Value>(scaled_data, idx);
+                    result = dr::maximum(result, values);
+                    mean_result += values; 
+                }
+            }
+        }
+
+        mean_result /= dr::pow(resolution_factor, 3);
+        size_t shape[4] = { (size_t) resolution.z(),
+                            (size_t) resolution.y(),
+                            (size_t) resolution.x(),
+                            1 };
+        Log(Debug, "Finished Supergrid Construction");
+        return {TensorXf(result, 4, shape), TensorXf(mean_result, 4, shape)};
+    }
+
     /**
      * \brief Evaluates the volume at the given interaction
      *
@@ -620,11 +769,16 @@ protected:
 
 protected:
     Texture3f m_texture;
+    ref<VolumeGrid> m_volume_grid;
     bool m_accel;
     bool m_raw;
     bool m_fixed_max = false;
     ScalarFloat m_max;
+    ScalarFloat m_min;
+    ScalarFloat m_avg;
     std::vector<ScalarFloat> m_max_per_channel;
+    std::vector<ScalarFloat> m_min_per_channel;
+    std::vector<ScalarFloat> m_avg_per_channel;
 };
 
 MI_IMPLEMENT_CLASS_VARIANT(GridVolume, Volume)

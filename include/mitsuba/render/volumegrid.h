@@ -61,6 +61,8 @@ public:
 
     /// Return the precomputed maximum over the volume grid
     ScalarFloat max() const { return m_max; }
+    ScalarFloat min() const { return m_min; }
+    ScalarFloat avg() const { return m_avg; }
 
     /**
      * \brief Return the precomputed maximum over the volume grid per channel
@@ -68,6 +70,8 @@ public:
      * Pointer allocation/deallocation must be performed by the caller.
      */
     void max_per_channel(ScalarFloat *out) const;
+    void min_per_channel(ScalarFloat *out) const;
+    void avg_per_channel(ScalarFloat *out) const;
 
     /// Set the precomputed maximum over the volume grid
     void set_max(ScalarFloat max) { m_max = max; }
@@ -119,7 +123,11 @@ protected:
     ScalarUInt32 m_channel_count;
     ScalarBoundingBox3f m_bbox;
     ScalarFloat m_max;
+    ScalarFloat m_min;
+    ScalarFloat m_avg;
     std::vector<ScalarFloat> m_max_per_channel;
+    std::vector<ScalarFloat> m_min_per_channel;
+    std::vector<ScalarFloat> m_avg_per_channel;
 };
 
 MI_EXTERN_CLASS(VolumeGrid)

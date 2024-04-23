@@ -1,7 +1,7 @@
 #pragma once
 #ifdef __CUDACC__
 
-# include <optix.h>
+# include <../../../../../../ProgramData/NVIDIA Corporation/OptiX SDK 7.6.0/include/optix.h>
 #include <mitsuba/render/optix/vector.cuh>
 
 namespace optix {

@@ -120,6 +120,14 @@ template <typename Point_> struct BoundingBox {
      */
     Vector extents() const { return max - min; }
 
+    Vector offset(Point p) const {
+        Vector o = p - min;
+        if (max.x > min.x) o.x /= max.x - min.x;
+        if (max.y > min.y) o.y /= max.y - min.y;
+        if (max.z > min.z) o.z /= max.z - min.z;
+        return o;
+    }
+
     /// Return the position of a bounding box corner
     Point corner(size_t index) const {
         Point result;
@@ -324,6 +332,12 @@ template <typename Point_> struct BoundingBox {
         active = active && maxt >= mint;
 
         return std::make_tuple(active, mint, maxt);
+    }
+
+    Point lerp(Point t) const {
+        return Point(dr::lerp(t.x, min.x, max.x),
+                       dr::lerp(t.y, min.y, max.y),
+                       dr::lerp(t.z, min.z, max.z));
     }
 
     /// Create a bounding sphere, which contains the axis-aligned box

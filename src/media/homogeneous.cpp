@@ -131,14 +131,17 @@ However, it supports the use of a spatially varying albedo.
 template <typename Float, typename Spectrum>
 class HomogeneousMedium final : public Medium<Float, Spectrum> {
 public:
-    MI_IMPORT_BASE(Medium, m_is_homogeneous, m_has_spectral_extinction, m_phase_function)
+    MI_IMPORT_BASE(Medium, m_is_homogeneous, m_has_spectral_extinction,
+                   m_phase_function, m_majorant_resolution_factor,
+                   m_majorant_grid, m_majorant_factor)
     MI_IMPORT_TYPES(Scene, Sampler, Texture, Volume)
 
     HomogeneousMedium(const Properties &props) : Base(props) {
         m_is_homogeneous = true;
         m_albedo = props.volume<Volume>("albedo", 0.75f);
         m_sigmat = props.volume<Volume>("sigma_t", 1.f);
-
+        if (m_majorant_resolution_factor > 0 || m_majorant_grid)
+            Throw("Not supoprted: majorant grid for a homogeneous medium.");
         m_scale = props.get<ScalarFloat>("scale", 1.0f);
         m_has_spectral_extinction = props.get<bool>("has_spectral_extinction", true);
 
@@ -164,7 +167,16 @@ public:
     get_majorant(const MediumInteraction3f &mi,
                  Mask active) const override {
         MI_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
-        return eval_sigmat(mi, active) & active;
+        UnpolarizedSpectrum majorant =
+            dr::maximum(1e-6f, m_majorant_factor * eval_sigmat(mi, active));
+        return majorant & active;
+    }
+
+    UnpolarizedSpectrum
+    get_control_sigma_t(const MediumInteraction3f & /* mi */,
+                 Mask active) const override {
+        MI_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, active);
+        return UnpolarizedSpectrum(1.f);
     }
 
     std::tuple<UnpolarizedSpectrum, UnpolarizedSpectrum, UnpolarizedSpectrum>

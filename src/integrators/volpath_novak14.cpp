@@ -89,10 +89,12 @@ public:
             m_est = 2;
         } else if (estimator == "rrt_local") {
             m_est = 3;
-        } else if (estimator == "nf_local") {
+        } else if (estimator == "nf") {
             m_est = 4;
+        } else if (estimator == "rm") {
+            m_est = 5;
         } else {
-            NotImplementedError("Unsupported estimator. Select one of the following: rt, rrt, rt_local, rrt_local, nf_local");
+            NotImplementedError("Unsupported estimator. Select one of the following: rt, rrt, rt_local, rrt_local, rm, nf");
         }
 
         if (sampler == "ff") {

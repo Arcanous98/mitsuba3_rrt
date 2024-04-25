@@ -577,72 +577,68 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
             dr::masked(TotalTr, escaped) = Tr*Tc; 
         }
     } else if (estimator_selector == 4) {
-        // Next Flight Estimator \w local Majorants
-        auto [dda_t, dda_tmax, dda_tdelta] = prepare_dda_traversal(
-            m_majorant_grid.get(), ray, mint, maxt, active);
-
-        Mask needs_new_target(active);
-        Spectrum T(1.f);
+        // Next Flight Estimator
         Spectrum tau_accum_f(1.f);
-        Float tau_acc(0.f);
-        Float local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
-        Float desired_tau = 0.f;
-
-        dr::Loop<Mask> loop("Next Flight Integrator with Local Majorants");
-        loop.put(T, dda_t, mei, tau_accum_f,local_majorant, TotalTr, dda_tdelta, dda_tmax, active_tracking, needs_new_target, desired_tau, tau_acc, sp.state, sp.inc);
+        Spectrum combined_extinction = get_majorant(mei, active_tracking);
+        Spectrum T = dr::exp(- combined_extinction * max_delta_t);
+        Float m = combined_extinction[0]; // default control mu is the average of volume densities
+        dr::Loop<Mask> loop("Next Flight Estimator");
+        loop.put(T, t, tau_accum_f, mei, TotalTr, active_tracking, m, sp.state, sp.inc);
         // sampler->loop_put(loop);
         loop.init();
         while (loop(dr::detach(active_tracking))){
-            dr::masked(desired_tau, active_tracking && needs_new_target) = -dr::log(1 - sp.template next_float<Float>(needs_new_target));
-            dr::masked(tau_acc, active_tracking && needs_new_target) = 0.f;
+            // Float sample = sampler->next_1d(active_tracking);
+            Float sample = sp.template next_float<Float>(active_tracking);
+            t -= (dr::log(1 - sample) / m);
 
-            Float t_next = dr::min(dda_tmax);
-            Vector3f tmax_update;
-            Mask got_assigned = false;
-            for (size_t k = 0; k < 3; ++k) {
-                Mask active_k = dr::eq(dda_tmax[k], t_next);
-                tmax_update[k] = dr::select(!got_assigned && active_k, dda_tdelta[k], 0);
-                got_assigned |= active_k;
-            }
+            Mask exceeded_limits = t >= maxt && active_tracking;
+            active_tracking &= !exceeded_limits;
 
-            dr::masked(mei.t, active_tracking) = 0.5f * (dda_t + t_next);
-            dr::masked(mei.p, active_tracking) = ray(mei.t);
+            dr::masked(mei.t, exceeded_limits) =  dr::Infinity<Float>;
+            dr::masked(mei.p, exceeded_limits) =  ray(mei.t);
+            dr::masked(TotalTr, exceeded_limits) = Spectrum(T);
 
-            local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
-            Float tau_next = tau_acc + local_majorant * (t_next - dda_t);
-
-            Float t_precise = dda_t + (desired_tau - tau_acc) / local_majorant;
-            Mask reached = active_tracking && (tau_next >= desired_tau) && (t_precise < maxt);
-            Mask escaped = active_tracking && (t_next >= maxt);
-
-            dr::masked(dda_t, active_tracking) = dr::select(reached, t_precise, dr::select(escaped, dr::Infinity<Float>, t_next));
-            dr::masked(dda_tmax, active_tracking && !reached) = dda_tmax + tmax_update;
-            dr::masked(tau_acc, active_tracking && !reached) = tau_next;
-
-            needs_new_target = active_tracking && (reached || escaped);
-
-            dr::masked(mei.t, needs_new_target) = dda_t;
-            dr::masked(mei.p, needs_new_target) = ray(mei.t);
-
-            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, needs_new_target);
-            Float r = dr::select(reached, mei.sigma_t[0] / local_majorant, 0);
+            dr::masked(mei.p, active_tracking) = ray(t);
+            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_tracking);
+            Float r = dr::select(active_tracking, mei.sigma_t[0] / m, 0.f);
 
             dr::masked(tau_accum_f, active_tracking) *= (Spectrum(1.f) - r);
-            dr::masked(T, reached) += tau_accum_f * dr::exp(- local_majorant * mei.sigma_t[0] * (maxt - dda_t));
+            dr::masked(T, active_tracking) += tau_accum_f * dr::exp(- combined_extinction * (maxt - t));
+        }
+    } else if (estimator_selector == 5){
+        // Ray Marching (Biased)
+        Spectrum combined_extinction = get_majorant(mei, active_tracking);
+        Float m = combined_extinction[0]; // default control mu is the average of volume densities
+        Spectrum T(0.f);
+        Float step = 1.f / m;
+        dr::Loop<Mask> loop("Ray Marching Estimator");
+        loop.put(t, T, step, mei, TotalTr, active_tracking, m, sp.state, sp.inc);
+        // sampler->loop_put(loop);
+        loop.init();
+        while (loop(dr::detach(active_tracking))){
+            // Float sample = sampler->next_1d(active_tracking);
+            dr::masked(step, active_tracking) = dr::minimum(step, maxt -t);
 
-            // Prepare for next iteration
-            active_tracking &= !escaped; 
+            Float jump = t + sp.template next_float<Float>(active_tracking) * step;
 
-            dr::masked(mei.t, escaped) =  dr::Infinity<Float>;
-            dr::masked(mei.p, escaped) =  ray(mei.t);
-            dr::masked(TotalTr, escaped) = T; 
+            Mask exceeded_limits = t >= maxt && active_tracking;
+            active_tracking &= !exceeded_limits;
+
+            dr::masked(mei.t, exceeded_limits) =  dr::Infinity<Float>;
+            dr::masked(mei.p, exceeded_limits) =  ray(mei.t);
+            dr::masked(TotalTr, exceeded_limits) = dr::exp(-T);
+
+            dr::masked(mei.p, active_tracking) = ray(jump);
+            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_tracking);
+            dr::masked(T, active_tracking) += mei.sigma_t * step;
+            dr::masked(t, active_tracking) += step;
         }
     } else {
         std::cout<<"Estimator: "<<estimator_selector<<std::endl;
-        NotImplementedError("select one of the following estimators: rt, rrt, rt_local, rrt_local");
+        NotImplementedError("select one of the following estimators: rt, rrt, rt_local, rrt_local, nf");
     }
     
-    return {mei, dr::clamp(TotalTr,0.f,1.f)};
+    return {mei, TotalTr};
 }
 
 

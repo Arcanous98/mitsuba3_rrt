@@ -90,10 +90,10 @@ def cube_test_scene(resx=512, resy=512, spp=16, density_scale=1.0):
 
 def load_volume_scene(gaussian_count="10k",
                       grid_res=256,
-                      path_env = "./scenes/teapot-full/textures/rustig_koppie_puresky_4k.exr", 
+                      path_env = "./scenes/teapot-full/textures/syferfontein_1d_clear_puresky_4k.exr", 
                     #   path_env = "./scenes/teapot-full/textures/venice_sunset_4k.exr", syferfontein_1d_clear_puresky_4k rustig_koppie_puresky_4k
                       density_scale=1.0, 
-                      albedo=0.3,
+                      albedo=0.99,
                       res=1080):
     T = mi.ScalarTransform4f
 
@@ -144,11 +144,12 @@ def load_volume_scene(gaussian_count="10k",
             'type': 'envmap',
             'filename': path_env,
             'to_world': t_env,
-            'scale': 3.0,
+            'scale': 1.0,
         },
         # -------------------- Media --------------------
         'medium1': {
             'type': 'heterogeneous',
+            'absorptive_medium': False,
             'scale': density_scale,
             'majorant_resolution_factor': 8,
 			"majorant_factor": 1.01,
@@ -207,15 +208,15 @@ def render_cloud(integrator_name="volpath_novak14",
 
     scene_dict = load_volume_scene()
     scene = mi.load_dict(scene_dict)
-    if integrator == "volpath":
+    if integrator_name == "volpath":
+         output_name = output_dir+"disney_cloud_"+integrator_name+".exr"
          integrator =  mi.load_dict({
                     'type': integrator_name,
                     'max_depth': 100,
                     'rr_depth': 1000,
-                    'transmittance_estimator': estimator, #rt, rrt, rt_local, rrt_local
-                    'distance_sampler': distance_sampler, #ff, ff_local
                    })
     else:
+        output_name = output_dir+"disney_cloud_"+integrator_name+"_"+estimator+"_"+distance_sampler+".exr"
         integrator =  mi.load_dict({
                         'type': integrator_name,
                         'max_depth': 100,
@@ -223,12 +224,13 @@ def render_cloud(integrator_name="volpath_novak14",
                         'transmittance_estimator': estimator, #rt, rrt, rt_local, rrt_local
                         'distance_sampler': distance_sampler, #ff, ff_local
                     })
+        
     loading_time = time.time() - init_time
     img = mi.render(scene, integrator=integrator, spp=spp)
     # plt.axis("off")
     # plt.imshow(img ** (1.0 / 2.2)); # approximate sRGB tonemapping
     # plt.show()
-    mi.util.write_bitmap(output_dir+"disney_cloud_"+integrator_name+"_"+estimator+"_"+distance_sampler+".exr", img)
+    mi.util.write_bitmap(output_name, img)
     return loading_time
 
 if __name__ == '__main__':
@@ -239,7 +241,7 @@ if __name__ == '__main__':
     loading_time = render_cloud(integrator_name="volpath_novak14",
                                 estimator="rrt_local",
                                 distance_sampler="ff_local",
-                                spp=1,
+                                spp=128,
                                 init_time=init_time)
     rendering_time = time.time() - init_time
     print("Rendering time (including jitting): "+str(rendering_time - loading_time))

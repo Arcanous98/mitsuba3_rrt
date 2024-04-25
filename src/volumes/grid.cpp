@@ -633,8 +633,10 @@ protected:
         Log(Debug, "Constructing supergrid of resolution %s from full grid of resolution %s",
             resolution, full_resolution);
         size_t n = dr::prod(resolution);
+        Float inv_n = 1 / n;
         Value result = dr::full<Value>(-dr::Infinity<Float>, n);
         Value mean_result = dr::zeros<Value>(n);
+        Value minorant_result = dr::full<Value>(dr::Infinity<Float>, n);
 
         // Z is the slowest axis, X is the fastest.
         auto [Z, Y, X] = dr::meshgrid(
@@ -677,21 +679,22 @@ protected:
                         offset_indices.z() * full_resolution.x() *
                             full_resolution.y();
 
-                    Value values =
-                        dr::gather<Value>(scaled_data, idx);
+                    Value values = dr::gather<Value>(scaled_data, idx);
                     result = dr::maximum(result, values);
-                    mean_result += values; 
+                    minorant_result = dr::minimum(result, values);
+                    mean_result += values * inv_n; 
                 }
             }
         }
-
-        mean_result /= dr::pow(resolution_factor, 3);
+        // result = dr::clamp(result, 0.0001f, dr::max(scaled_data));
+        
         size_t shape[4] = { (size_t) resolution.z(),
                             (size_t) resolution.y(),
                             (size_t) resolution.x(),
                             1 };
         Log(Debug, "Finished Supergrid Construction");
         return {TensorXf(result, 4, shape), TensorXf(mean_result, 4, shape)};
+        // return {TensorXf(result, 4, shape), TensorXf(mean_result, 4, shape)};
     }
 
     /**

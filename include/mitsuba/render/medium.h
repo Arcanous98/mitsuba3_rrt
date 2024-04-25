@@ -126,7 +126,8 @@ public:
      * Similar to \ref sample_interaction, but ensures that a real interaction
      * is sampled.
      */
-    MediumInteraction3f sample_interaction_real(const Ray3f &ray, Sampler *sampler, Mask active) const;
+
+    MediumInteraction3f sample_interaction_real(const Ray3f &ray, UInt32 v0, UInt32 v1, Mask active) const;
     
     MediumInteraction3f sample_interaction_real_super(const Ray3f &ray, UInt32 v0, UInt32 v1, Mask active) const;
 
@@ -151,6 +152,8 @@ public:
 
     /// Returns whether this medium is homogeneous
     MI_INLINE bool is_homogeneous() const { return m_is_homogeneous; }
+
+    MI_INLINE bool is_absorptive() const { return m_is_absorptive; }
 
     /// Returns whether this medium has a spectrally varying extinction
     MI_INLINE bool has_spectral_extinction() const {
@@ -180,6 +183,7 @@ protected:
 protected:
     ref<PhaseFunction> m_phase_function;
     bool m_sample_emitters, m_is_homogeneous, m_has_spectral_extinction;
+    bool m_is_absorptive = false;
 
     size_t m_majorant_resolution_factor;
     // majorant grid contains control density grid
@@ -207,6 +211,7 @@ DRJIT_VCALL_TEMPLATE_BEGIN(mitsuba::Medium)
     DRJIT_VCALL_GETTER(phase_function, const typename Class::PhaseFunction*)
     DRJIT_VCALL_GETTER(use_emitter_sampling, bool)
     DRJIT_VCALL_GETTER(is_homogeneous, bool)
+    DRJIT_VCALL_GETTER(is_absorptive, bool)
     DRJIT_VCALL_GETTER(has_spectral_extinction, bool)
     DRJIT_VCALL_METHOD(get_majorant)
     DRJIT_VCALL_METHOD(get_control_sigma_t)

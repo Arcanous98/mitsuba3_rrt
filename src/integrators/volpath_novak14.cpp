@@ -89,8 +89,10 @@ public:
             m_est = 2;
         } else if (estimator == "rrt_local") {
             m_est = 3;
+        } else if (estimator == "nf_local") {
+            m_est = 4;
         } else {
-            NotImplementedError("Unsupported estimator. Select one of the following: rt, rrt, rt_local, rrt_local");
+            NotImplementedError("Unsupported estimator. Select one of the following: rt, rrt, rt_local, rrt_local, nf_local");
         }
 
         if (sampler == "ff") {
@@ -171,27 +173,33 @@ public:
             // ----------------------- Sampling the RTE -----------------------
             Mask active_medium  = active && dr::neq(medium, nullptr);
             Mask active_surface = active && !active_medium;
+            Mask absorptive = active_medium && medium->is_absorptive();
             Mask escaped_medium = false;
 
             if (dr::any_or<true>(active_medium)) {
+                UInt32 v0(0), v1(0);
+                Spectrum integral_tr(1.f);
+                if constexpr (dr::is_array_v<Float>) {
+                    UInt32 seed = UInt32(sampler->next_1d(active_medium) * UINT32_MAX);
+                    UInt32 idx = dr::arange<UInt32>(sampler->wavefront_size());
+                    std::tie(v0, v1) = sample_tea_32(seed, idx);
+                } else {
+                    v0 = UInt32(sampler->next_1d(active_medium) * UINT32_MAX);
+                }
                 if (m_sampler == 0){
-                    mei = medium->sample_interaction_real(ray, sampler, active_medium); //free flight sampling with global majorant
+                    dr::masked(mei, active_medium && !absorptive) = medium->sample_interaction_real(ray, v0, v1, active_medium && !absorptive); //free flight sampling with global majorant
+                    // dr::masked(throughput, active_medium) *= weight;
                 } else if (m_sampler == 1){
-                    UInt32 v0(0), v1(0);
-                    if constexpr (dr::is_array_v<Float>) {
-                        UInt32 seed = UInt32(sampler->next_1d(active_medium) * dr::Largest<UInt32>);
-                        UInt32 idx = dr::arange<UInt32>(sampler->wavefront_size());
-                        std::tie(v0, v1) = sample_tea_32(seed, idx);
-                    } else {
-                        v0 = UInt32(sampler->next_1d(active_medium) * dr::Largest<UInt32>);
-                    }
-                    mei = medium->sample_interaction_real_super(ray, v0, v1, active_medium); //free flight sampling with supervoxel majorants
+                    dr::masked(mei, active_medium && !absorptive) = medium->sample_interaction_real_super(ray, v0, v1, active_medium && !absorptive); //free flight sampling with supervoxel majorants
                 } else {
                     std::cout<<"Sampler: "<<m_sampler<<std::endl;
                     NotImplementedError("select one of the following distance samplers: ff, ff_local");
                 }
-
-                dr::masked(ray.maxt, active_medium && medium->is_homogeneous() && mei.is_valid()) = mei.t;     
+                std::tie(dr::masked(mei, absorptive), dr::masked(integral_tr, absorptive)) = medium->integrate_tr(ray, v0, v1, m_est, absorptive);
+                dr::masked(throughput, absorptive) *= (integral_tr);
+                
+                dr::masked(ray.maxt, active_medium && medium->is_homogeneous() && mei.is_valid()) = mei.t;
+                dr::masked(ray.maxt, active_medium && medium->is_absorptive() && mei.is_valid()) = mei.t;     
                 Mask intersect = needs_intersection && active_medium;
                 if (dr::any_or<true>(intersect))
                     dr::masked(si, intersect) = scene->ray_intersect(ray, intersect);
@@ -204,8 +212,7 @@ public:
 
                 dr::masked(depth, active_medium) += 1;
                 dr::masked(last_scatter_event, active_medium) = mei;
-                dr::masked(throughput, active_medium) *= (mei.sigma_s / mei.sigma_t);
-
+                dr::masked(throughput, active_medium && !absorptive) *= (mei.sigma_s / mei.sigma_t);
             }
             
             // Dont estimate lighting if we exceeded number of bounces
@@ -230,7 +237,6 @@ public:
                     dr::masked(result, active_e) += throughput * phase_val * emitted *
                                                     mis_weight(ds.pdf, dr::select(ds.delta, 0.f, phase_pdf));
                 }
-
                 // ------------------ Phase function sampling -----------------
                 dr::masked(phase, !active_medium) = nullptr;
                 auto [wo, phase_weight, phase_pdf] = phase->sample(phase_ctx, mei,
@@ -373,14 +379,13 @@ public:
             if (dr::any_or<true>(active_medium)) {
                 UInt32 v0(0), v1(0);
                 if constexpr (dr::is_array_v<Float>) {
-                    UInt32 seed = UInt32(sampler->next_1d(active_medium) * dr::Largest<UInt32>);
+                    UInt32 seed = UInt32(sampler->next_1d(active_medium) * UINT32_MAX);
                     UInt32 idx = dr::arange<UInt32>(sampler->wavefront_size());
                     std::tie(v0, v1) = sample_tea_32(seed, idx);
                 } else {
-                    v0 = UInt32(sampler->next_1d(active_medium) * dr::Largest<UInt32>);
+                    v0 = UInt32(sampler->next_1d(active_medium) * UINT32_MAX);
                 }
                 auto [mei, integral_tr] = medium->integrate_tr(ray, v0, v1, m_est, active_medium); // transmission integral \w supervoxel majorant and control grid
-                // auto [mei, integral_tr] = medium->integrate_tr(ray, v0, v1, active_medium); // transmission integral \wo supervoxel majorant and control grid
 
                 Mask intersect = needs_intersection && active_medium;
                 if (dr::any_or<true>(intersect))
@@ -388,8 +393,8 @@ public:
 
                 needs_intersection &= !active_medium;
                 escaped_medium = active_medium && !mei.is_valid();
+                transmittance[active_medium] *= integral_tr;
                 active_medium &= mei.is_valid();
-                transmittance *= integral_tr;
             }
 
             // Handle interactions with surfaces

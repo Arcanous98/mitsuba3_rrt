@@ -131,7 +131,7 @@ However, it supports the use of a spatially varying albedo.
 template <typename Float, typename Spectrum>
 class HomogeneousMedium final : public Medium<Float, Spectrum> {
 public:
-    MI_IMPORT_BASE(Medium, m_is_homogeneous, m_has_spectral_extinction,
+    MI_IMPORT_BASE(Medium, m_is_homogeneous, m_has_spectral_extinction,m_is_absorptive,
                    m_phase_function, m_majorant_resolution_factor,
                    m_majorant_grid, m_majorant_factor)
     MI_IMPORT_TYPES(Scene, Sampler, Texture, Volume)
@@ -140,6 +140,8 @@ public:
         m_is_homogeneous = true;
         m_albedo = props.volume<Volume>("albedo", 0.75f);
         m_sigmat = props.volume<Volume>("sigma_t", 1.f);
+        m_is_absorptive  = props.get<bool>("absorptive_medium", false);
+
         if (m_majorant_resolution_factor > 0 || m_majorant_grid)
             Throw("Not supoprted: majorant grid for a homogeneous medium.");
         m_scale = props.get<ScalarFloat>("scale", 1.0f);

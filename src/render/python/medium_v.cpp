@@ -44,6 +44,7 @@ public:
 
     using Medium::m_sample_emitters;
     using Medium::m_is_homogeneous;
+    using Medium::m_is_absorptive;
     using Medium::m_has_spectral_extinction;
 };
 
@@ -112,6 +113,13 @@ MI_PY_EXPORT(Medium) {
                 [](PyMedium &medium, bool value){
                     medium.m_is_homogeneous = value;
                     dr::set_attr(&medium, "is_homogeneous", value);
+                }
+            )
+            .def_property("m_is_absorptive",
+                [](PyMedium &medium){ return medium.m_is_absorptive; },
+                [](PyMedium &medium, bool value){
+                    medium.m_is_absorptive = value;
+                    dr::set_attr(&medium, "m_is_absorptive", value);
                 }
             )
             .def_property("m_has_spectral_extinction",

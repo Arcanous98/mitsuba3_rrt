@@ -321,7 +321,7 @@ public:
             }
             active &= (active_surface | active_medium);
         }
-        return { result, valid_ray };
+        return { dr::select(dr::isnan(result),0.f,result), valid_ray };
     }
 
 
@@ -441,7 +441,8 @@ public:
                 dr::masked(medium, has_medium_trans) = si.target_medium(ray.d);
             }
         }
-        return { transmittance * emitter_val, ds };
+        transmittance = dr::select(dr::isnan(transmittance),0.f, dr::clamp(transmittance,0.f,1.f));
+        return {  transmittance * emitter_val, ds };
     }
 
     //! @}

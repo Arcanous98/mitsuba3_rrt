@@ -8,7 +8,7 @@
 
 NAMESPACE_BEGIN(mitsuba)
 
-MI_VARIANT Medium<Float, Spectrum>::Medium() : m_is_homogeneous(false), m_has_spectral_extinction(true) {}
+MI_VARIANT Medium<Float, Spectrum>::Medium() : m_is_homogeneous(false), m_has_spectral_extinction(true), m_is_absorptive(false) {}
 
 MI_VARIANT Medium<Float, Spectrum>::Medium(const Properties &props)
     : m_majorant_grid(nullptr), m_control_grid(nullptr), m_id(props.id()) {
@@ -52,7 +52,7 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
     auto [mei, mint, maxt, active] = prepare_interaction_sampling(ray, _active);
 
     const Float desired_tau = -dr::log(1 - sample);
-    Float sampled_t;
+    Float sampled_t(0.f);
     if (m_majorant_grid) {
         // --- Spatially-variying majorant (supergrid).
         // 1. Prepare for DDA traversal
@@ -63,13 +63,13 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
 
         // 2. Traverse the medium with DDA until we reach the desired
         // optical depth.
-        Mask active_dda = active;
-        Mask reached = false;
-        Float tau_acc = 0.f;
+        Mask active_tracking(active);
+        Mask reached(!active);
+        Float tau_acc(0.f);
         dr::Loop<Mask> dda_loop("Medium::sample_interaction_dda");
-        dda_loop.put(active_dda, reached, dda_t, dda_tmax, tau_acc, mei);
+        dda_loop.put(active_tracking, reached, dda_t, dda_tmax, tau_acc, mei);
         dda_loop.init();
-        while (dda_loop(dr::detach(active_dda))) {
+        while (dda_loop(dr::detach(active_tracking))) {
             // Figure out which axis we hit first.
             // `t_next` is the ray's `t` parameter when hitting that axis.
             Float t_next = dr::min(dda_tmax);
@@ -82,25 +82,24 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
             }
 
             // Lookup and accumulate majorant in current cell.
-            dr::masked(mei.t, active_dda) = 0.5f * (dda_t + t_next);
-            dr::masked(mei.p, active_dda) = ray(mei.t);
+            dr::masked(mei.t, active_tracking) = 0.5f * (dda_t + t_next);
+            dr::masked(mei.p, active_tracking) = ray(mei.t);
             // TODO: avoid this vcall, could lookup directly from the array
             // of floats (but we still need to account for the bbox, etc).
-            Float majorant = m_majorant_grid->eval_1(mei, active_dda);
-            Float tau_next = tau_acc + majorant * (t_next - dda_t);
+            Float local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
+            Float tau_next = tau_acc + local_majorant * (t_next - dda_t);
 
             // For rays that will stop within this cell, figure out
             // the precise `t` parameter where `desired_tau` is reached.
-            Float t_precise = dda_t + (desired_tau - tau_acc) / majorant;
-            reached |= active_dda && (majorant > 0) && (t_precise < maxt) && (tau_next >= desired_tau);
-            dr::masked(dda_t, active_dda) = dr::select(reached, t_precise, t_next);
+            Float t_precise = dda_t + (desired_tau - tau_acc) / local_majorant;
+            reached |= active_tracking && (tau_next >= desired_tau) && (t_precise < maxt) && (local_majorant > 0);
+            dr::masked(dda_t, active_tracking) = dr::select(reached, t_precise, t_next);
 
             // Prepare for next iteration
-            active_dda &= !reached && (t_next < maxt);
-            dr::masked(dda_tmax, active_dda) = dda_tmax + tmax_update;
-            dr::masked(tau_acc, active_dda) = tau_next;
+            active_tracking &= !reached && (t_next < maxt);
+            dr::masked(dda_tmax, active_tracking) = dda_tmax + tmax_update;
+            dr::masked(tau_acc, active_tracking) = tau_next;
         }
-
         // Adopt the stopping location, making sure to convert to the main
         // ray's parametrization.
         sampled_t = dr::select(reached, dda_t, dr::Infinity<Float>);
@@ -108,26 +107,27 @@ Medium<Float, Spectrum>::sample_interaction(const Ray3f &ray, Float sample,
         // --- A single majorant for the whole volume.
         mei.combined_extinction = dr::detach(get_majorant(mei, active));
         Float m                = extract_channel(mei.combined_extinction, channel);
-        sampled_t              = mint + (desired_tau / m);
+        sampled_t = mint + (desired_tau / m);
     }
 
     Mask valid_mei = active && (sampled_t <= maxt);
-    mei.t          = dr::select(valid_mei, sampled_t, dr::Infinity<Float>);
-    mei.p          = ray(sampled_t);
+    dr::masked(mei.t, active) = dr::select(valid_mei, sampled_t, dr::Infinity<Float>);
+    dr::masked(mei.p, active) = ray(sampled_t);
 
     if (m_majorant_grid) {
         // Otherwise it was already looked up above
         mei.combined_extinction = dr::detach(m_majorant_grid->eval_1(mei, valid_mei));
     }
     std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) =
-        get_scattering_coefficients(mei, valid_mei);
+        get_scattering_coefficients(mei, active);
     return mei;
 }
 
 MI_VARIANT
 typename Medium<Float, Spectrum>::MediumInteraction3f
 Medium<Float, Spectrum>::sample_interaction_real(const Ray3f &ray,
-                                                 Sampler *sampler,
+                                                 UInt32 seed_v0,
+                                                 UInt32 seed_v1,
                                                  Mask _active) const {
     MI_MASKED_FUNCTION(ProfilerPhase::MediumSample, _active);
 
@@ -135,7 +135,7 @@ Medium<Float, Spectrum>::sample_interaction_real(const Ray3f &ray,
     UInt32 channel(0);
     MediumInteraction3f mei_next = mei;
     Mask escaped = !active;
-    Spectrum weight = dr::full<Spectrum>(1.f, dr::width(ray));
+    // Spectrum weight = dr::full<Spectrum>(1.f, dr::width(ray));
     dr::Loop<Mask> loop("Medium::sample_interaction_real");
 
     // Get global majorant once and for all
@@ -143,13 +143,20 @@ Medium<Float, Spectrum>::sample_interaction_real(const Ray3f &ray,
     mei.combined_extinction  = combined_extinction;
     Float global_majorant = extract_channel(combined_extinction, channel);
 
-    loop.put(active, mei, mei_next, escaped, weight);
-    sampler->loop_put(loop);
+    using PCG32 = mitsuba::PCG32<UInt32>;
+    PCG32 sp;
+    if constexpr (dr::is_array_v<Float>) {
+        sp.seed(1, seed_v0, seed_v1);
+    } else {
+        sp.seed(1, seed_v0, PCG32_DEFAULT_STREAM);
+    }
+    loop.put(active, mei, mei_next, escaped, sp.state, sp.inc);
+    // sampler->loop_put(loop);
     loop.init();
 
     while (loop(active)) {
         // Repeatedly sample from homogenized medium
-        Float desired_tau = -dr::log(1 - sampler->next_1d(active));
+        Float desired_tau = -dr::log(1 - sp.template next_float<Float>(active));
         Float sampled_t = mei_next.mint + desired_tau / global_majorant;
 
         Mask valid_mei = active && (sampled_t < maxt);
@@ -160,12 +167,12 @@ Medium<Float, Spectrum>::sample_interaction_real(const Ray3f &ray,
 
         // Determine whether it was a real or null interaction
         Float r = extract_channel(mei_next.sigma_t, channel) / global_majorant;
-        Mask did_scatter = valid_mei && (sampler->next_1d(valid_mei) < r);
+        Mask did_scatter = valid_mei && (sp.template next_float<Float>(active) < r);
         mei[did_scatter] = mei_next;
 
-        Spectrum event_pdf = mei_next.sigma_t / combined_extinction;
-        event_pdf = dr::select(did_scatter, event_pdf, 1.f - event_pdf);
-        weight[active] *= event_pdf / dr::detach(event_pdf);
+        // Spectrum event_pdf = mei_next.sigma_t / combined_extinction;
+        // event_pdf = dr::select(did_scatter, event_pdf, 1.f - event_pdf);
+        // weight[active] *= event_pdf / dr::detach(event_pdf);
 
         mei_next.mint = sampled_t;
         escaped |= active && (mei_next.mint >= maxt);
@@ -201,17 +208,20 @@ Medium<Float, Spectrum>::sample_interaction_real_super(const Ray3f &ray,
         sp.seed(1, seed_v0, PCG32_DEFAULT_STREAM);
     }
 
-    Float desired_tau = -dr::log(1 - sp.template next_float<Float>(active));
+    Float desired_tau = 0.f;
 
     Mask active_tracking(active);
-    Mask escaped(!active);
+    Mask needs_new_target(active);
     dr::Loop<Mask> loop("Ratio Tracking Distance Sampler with DDA SuperGrid");
     Float local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
     
-    loop.put(dda_t, dda_tmax, dda_tdelta, mei, local_majorant, tau_acc, escaped, active_tracking, desired_tau, sp.state, sp.inc);
+    loop.put(dda_t, dda_tmax, dda_tdelta, mei, local_majorant, tau_acc, needs_new_target, active_tracking, desired_tau, sp.state, sp.inc);
     // sampler->loop_put(loop);
     loop.init();
     while (loop(dr::detach(active_tracking))){
+        dr::masked(desired_tau, active_tracking && needs_new_target) = -dr::log(1 - sp.template next_float<Float>(needs_new_target));
+        dr::masked(tau_acc, active_tracking && needs_new_target) = 0.f;
+
         Float t_next = dr::min(dda_tmax);
         Vector3f tmax_update;
         Mask got_assigned = false;
@@ -223,41 +233,36 @@ Medium<Float, Spectrum>::sample_interaction_real_super(const Ray3f &ray,
 
         dr::masked(mei.t, active_tracking) = 0.5f * (dda_t + t_next);
         dr::masked(mei.p, active_tracking) = ray(mei.t);
-        // TODO: avoid this vcall, could lookup directly from the array
-        // of floats (but we still need to account for the bbox, etc).
+        
         local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
         Float tau_next = tau_acc + local_majorant * (t_next - dda_t);
 
         // For rays that will stop within this cell, figure out
         // the precise `t` parameter where `desired_tau` is reached.
         Float t_precise = dda_t + (desired_tau - tau_acc) / local_majorant;
+        Mask reached = active_tracking && (tau_next >= desired_tau) && (t_precise < maxt);
+        Mask escaped = active_tracking && (t_next >= maxt);
 
-        Mask reached = active_tracking && (tau_next >= desired_tau) && (local_majorant > 0)  && (t_precise < maxt);
+        dr::masked(dda_t, active_tracking) = dr::select(reached, t_precise, dr::select(escaped, dr::Infinity<Float>, t_next));
+        dr::masked(dda_tmax, active_tracking && !reached) = dda_tmax + tmax_update;
+        dr::masked(tau_acc, active_tracking && !reached) = tau_next;
 
-        dr::masked(dda_t, active_tracking) = dr::select(reached, t_precise, t_next);
-        dr::masked(dda_tmax, active_tracking) = dda_tmax + tmax_update;
-        desired_tau = dr::select(reached, -dr::log(1 - sp.template next_float<Float>(reached)), desired_tau);
-        tau_acc = dr::select(reached, 0.f, tau_next);
+        needs_new_target = active_tracking && (reached || escaped);
 
-        dr::masked(mei.t, reached) = dda_t;
-        dr::masked(mei.p, reached) = ray(mei.t);
+        dr::masked(mei.t, needs_new_target) = dda_t;
+        dr::masked(mei.p, needs_new_target) = ray(mei.t);
 
-        Spectrum sigma_s(0.f), sigma_n(0.f), sigma_t(0.f);
-        std::tie(sigma_s, sigma_n, sigma_t) = get_scattering_coefficients(mei, reached);
-        Float r = dr::select(dr::neq(local_majorant, 0), sigma_t[0] / local_majorant, 0);
+        std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, needs_new_target);
+        Float r = dr::select(dr::neq(local_majorant, 0), mei.sigma_t[0] / local_majorant, 0);
         Mask scattering = reached && sp.template next_float<Float>(reached) < r;
 
         // Prepare for next iteration
-        escaped |= active && (dda_t >= maxt);
-        active_tracking &= !scattering && !escaped && (t_next < maxt); 
+        active_tracking &= !scattering;
+        active_tracking &= !escaped; 
 
-        mei.t = dr::select(scattering, dda_t, dr::Infinity<Float>);
-        mei.sigma_s     = dr::select(scattering, sigma_s, 1.f);
-        mei.sigma_t     = dr::select(scattering, sigma_t, 1.f);
-        mei.sigma_n     = dr::select(scattering, sigma_n, 1.f);        
+        mei.t = dr::select(scattering, dda_t, dr::Infinity<Float>);     
     }
-    dr::masked(mei.t, escaped) = dr::Infinity<Float>;
-    mei.p                      = ray(mei.t);
+    mei.p = ray(mei.t);
     return mei;
 }
 
@@ -377,16 +382,12 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
 
     // TODO: add early exits when transmittance reaches a lower bound
     auto [mei, mint, maxt, active] = prepare_interaction_sampling(ray, _active);
-    auto [dda_t, dda_tmax, dda_tdelta] = prepare_dda_traversal(
-            m_majorant_grid.get(), ray, mint, maxt, active);
     
     Float t(mint);
     Spectrum TotalTr(1.f);
     Float max_delta_t = maxt-mint;
     Float T(1.f);
     Mask active_tracking(active);
-    Float local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
-
     using PCG32 = mitsuba::PCG32<UInt32>;
     PCG32 sp;
     
@@ -452,15 +453,23 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
         }
     } else if (estimator_selector == 2) {
         // Ratio Tracking \w local majorants
-        Mask exceeded_limits(!active_tracking);
+        auto [dda_t, dda_tmax, dda_tdelta] = prepare_dda_traversal(
+            m_majorant_grid.get(), ray, mint, maxt, active);
+
+        Mask needs_new_target(active);
         Spectrum T(1.f);
         Float tau_acc(0.f);
-        Float desired_tau = -dr::log(1 - sp.template next_float<Float>(active_tracking));
+        Float local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
+        Float desired_tau = 0.f;
+
         dr::Loop<Mask> loop("Ratio Tracking Integrator with Local Majorants");
-        loop.put(T, dda_t, mei, local_majorant, TotalTr, dda_tdelta, dda_tmax, active_tracking, exceeded_limits, desired_tau, tau_acc, sp.state, sp.inc);
+        loop.put(T, dda_t, mei, local_majorant, TotalTr, dda_tdelta, dda_tmax, active_tracking, needs_new_target, desired_tau, tau_acc, sp.state, sp.inc);
         // sampler->loop_put(loop);
         loop.init();
         while (loop(dr::detach(active_tracking))){
+            dr::masked(desired_tau, active_tracking && needs_new_target) = -dr::log(1 - sp.template next_float<Float>(needs_new_target));
+            dr::masked(tau_acc, active_tracking && needs_new_target) = 0.f;
+
             Float t_next = dr::min(dda_tmax);
             Vector3f tmax_update;
             Mask got_assigned = false;
@@ -477,53 +486,51 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
             Float tau_next = tau_acc + local_majorant * (t_next - dda_t);
 
             Float t_precise = dda_t + (desired_tau - tau_acc) / local_majorant;
+            Mask reached = active_tracking && (tau_next >= desired_tau) && (t_precise < maxt);
+            Mask escaped = active_tracking && (t_next >= maxt);
 
-            Mask reached = active_tracking && (tau_next >= desired_tau) && (local_majorant > 0)  && (t_precise < maxt);
+            dr::masked(dda_t, active_tracking) = dr::select(reached, t_precise, dr::select(escaped, dr::Infinity<Float>, t_next));
+            dr::masked(dda_tmax, active_tracking && !reached) = dda_tmax + tmax_update;
+            dr::masked(tau_acc, active_tracking && !reached) = tau_next;
 
-            dr::masked(dda_t, active_tracking) = t_next;
-            dr::masked(dda_tmax, active_tracking) = dda_tmax + tmax_update;
-            dr::masked(desired_tau, reached) = -dr::log(1 - sp.template next_float<Float>(reached));
-            tau_acc = dr::select(reached, local_majorant * (t_next - t_precise), tau_next);
+            needs_new_target = active_tracking && (reached || escaped);
 
-            dr::masked(mei.t, reached) = dda_t;
-            dr::masked(mei.p, reached) = ray(mei.t);
+            dr::masked(mei.t, needs_new_target) = dda_t;
+            dr::masked(mei.p, needs_new_target) = ray(mei.t);
 
-            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, reached);
+            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, needs_new_target);
             Float r = dr::select(reached, mei.sigma_t[0] / local_majorant, 0);
-            Mask real = reached && sp.template next_float<Float>(reached) < r;
 
             dr::masked(T, active_tracking) *= (Spectrum(1.f) - r);
 
-            exceeded_limits = active_tracking && (dda_t >= maxt);
-            active_tracking &= !exceeded_limits;
+            // Prepare for next iteration
+            active_tracking &= !escaped; 
 
-            dr::masked(mei.t, exceeded_limits) =  dr::Infinity<Float>;
-            dr::masked(mei.p, exceeded_limits) =  ray(mei.t);
-            dr::masked(TotalTr, exceeded_limits) = T; 
+            dr::masked(mei.t, escaped) =  dr::Infinity<Float>;
+            dr::masked(mei.p, escaped) =  ray(mei.t);
+            dr::masked(TotalTr, escaped) = T; 
         }
     } else if (estimator_selector == 3) {
         // Residual Ratio Tracking \w local majorants and local control coefficients
-        Float max_delta_t = maxt-mint;
-
+        auto [dda_t, dda_tmax, dda_tdelta] = prepare_dda_traversal(
+            m_majorant_grid.get(), ray, mint, maxt, active);
+        Float local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
         Float local_control = m_control_grid->eval_1(mei, active_tracking);
         Float local_residual = local_majorant - local_control;
+        Mask needs_new_target(active);
 
-        Spectrum Tc = dr::exp(- local_control * (dr::min(dda_tmax) - mint));
+        Spectrum Tc(1.f);// = dr::exp(- local_control * (dr::min(dda_tmax) - mint));
         Spectrum Tr(1.f);
 
         Float tau_acc(0.f);
         Float desired_tau = -dr::log(1 - sp.template next_float<Float>(active_tracking));
-        dr::Loop<Mask> loop("Ratio Tracking Integrator with Local Majorants");
-        loop.put(Tr, Tc, TotalTr, dda_t, dda_tdelta, dda_tmax, mei, local_majorant, local_control, local_residual, active_tracking, desired_tau, tau_acc, sp.state, sp.inc);
+        dr::Loop<Mask> loop("Residual Ratio Tracking Integrator with Local Majorants and Control Coeffs");
+        loop.put(Tr, Tc, TotalTr, dda_t, dda_tdelta, dda_tmax, mei, local_majorant, local_control, local_residual, active_tracking, needs_new_target, desired_tau, tau_acc, sp.state, sp.inc);
         // sampler->loop_put(loop);
         loop.init();
         while (loop(dr::detach(active_tracking))){
-            Mask exceeded_limits = active_tracking && (dda_t >= maxt);
-            active_tracking &= !exceeded_limits;
-
-            dr::masked(mei.t, exceeded_limits) =  dr::Infinity<Float>;
-            dr::masked(mei.p, exceeded_limits) =  ray(mei.t);
-            dr::masked(TotalTr, exceeded_limits) = Tc*Tr; 
+            dr::masked(desired_tau, active_tracking && needs_new_target) = -dr::log(1 - sp.template next_float<Float>(needs_new_target));
+            dr::masked(tau_acc, active_tracking && needs_new_target) = 0.f;
 
             Float t_next = dr::min(dda_tmax);
             Vector3f tmax_update;
@@ -539,37 +546,103 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
 
             local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
             local_control = m_control_grid->eval_1(mei, active_tracking);
-            local_residual = local_majorant - local_control;
+            local_residual = local_majorant - local_control;//dr::clamp(local_majorant - local_control,0.00001,dr::Infinity<Float>);
 
             Float tau_next = tau_acc + local_residual * (t_next - dda_t);
 
-            Float t_precise = dda_t + (desired_tau - tau_acc) / local_residual;
+            Float t_precise = dda_t + (desired_tau - tau_acc) / local_majorant;
+            Mask reached = active_tracking && (tau_next >= desired_tau) && (t_precise < maxt);
+            Mask escaped = active_tracking && (t_next >= maxt);
 
-            Mask reached = active_tracking && (tau_next >= desired_tau) && (local_majorant > 0)  && (t_precise < maxt);
+            Float distance_travelled = dr::select(reached, t_precise - dda_t, dr::select(escaped, maxt - dda_t, t_next - dda_t));
 
-            Float distance_travelled = t_next - dda_t;
+            dr::masked(dda_t, active_tracking) = dr::select(reached, t_precise, dr::select(escaped, dr::Infinity<Float>, t_next));
+            dr::masked(dda_tmax, active_tracking && !reached) = dda_tmax + tmax_update;
+            dr::masked(tau_acc, active_tracking && !reached) = tau_next;
 
-            dr::masked(dda_t, active_tracking) = t_next;
-            dr::masked(dda_tmax, active_tracking) = dda_tmax + tmax_update;
-            dr::masked(desired_tau, reached) = -dr::log(1 - sp.template next_float<Float>(reached));
-            tau_acc = dr::select(reached, local_residual * (t_next - t_precise), tau_next);
+            needs_new_target = active_tracking && (reached || escaped);
 
-            dr::masked(mei.t, reached) = dda_t;
-            dr::masked(mei.p, reached) = ray(mei.t);
+            dr::masked(mei.t, needs_new_target) = dda_t;
+            dr::masked(mei.p, needs_new_target) = ray(mei.t);
 
             std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, reached);
-            Float r = dr::select(reached, (mei.sigma_t[0] - local_control) / local_residual, 0);
+            Float r = dr::select(reached, (mei.sigma_t[0] - local_control) / local_residual, 0.f);
 
-            Mask real = reached && sp.template next_float<Float>(reached) < r;
-
-            dr::masked(Tr, real) *= (Spectrum(1.f) - r);
+            dr::masked(Tr, active_tracking) *= (Spectrum(1.f) - r);
             dr::masked(Tc, active_tracking) *= dr::exp(- local_control * distance_travelled);
+
+            active_tracking &= !escaped; 
+            dr::masked(mei.t, escaped) =  dr::Infinity<Float>;
+            dr::masked(mei.p, escaped) =  ray(mei.t);
+            dr::masked(TotalTr, escaped) = Tr*Tc; 
+        }
+    } else if (estimator_selector == 4) {
+        // Next Flight Estimator \w local Majorants
+        auto [dda_t, dda_tmax, dda_tdelta] = prepare_dda_traversal(
+            m_majorant_grid.get(), ray, mint, maxt, active);
+
+        Mask needs_new_target(active);
+        Spectrum T(1.f);
+        Spectrum tau_accum_f(1.f);
+        Float tau_acc(0.f);
+        Float local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
+        Float desired_tau = 0.f;
+
+        dr::Loop<Mask> loop("Next Flight Integrator with Local Majorants");
+        loop.put(T, dda_t, mei, tau_accum_f,local_majorant, TotalTr, dda_tdelta, dda_tmax, active_tracking, needs_new_target, desired_tau, tau_acc, sp.state, sp.inc);
+        // sampler->loop_put(loop);
+        loop.init();
+        while (loop(dr::detach(active_tracking))){
+            dr::masked(desired_tau, active_tracking && needs_new_target) = -dr::log(1 - sp.template next_float<Float>(needs_new_target));
+            dr::masked(tau_acc, active_tracking && needs_new_target) = 0.f;
+
+            Float t_next = dr::min(dda_tmax);
+            Vector3f tmax_update;
+            Mask got_assigned = false;
+            for (size_t k = 0; k < 3; ++k) {
+                Mask active_k = dr::eq(dda_tmax[k], t_next);
+                tmax_update[k] = dr::select(!got_assigned && active_k, dda_tdelta[k], 0);
+                got_assigned |= active_k;
+            }
+
+            dr::masked(mei.t, active_tracking) = 0.5f * (dda_t + t_next);
+            dr::masked(mei.p, active_tracking) = ray(mei.t);
+
+            local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
+            Float tau_next = tau_acc + local_majorant * (t_next - dda_t);
+
+            Float t_precise = dda_t + (desired_tau - tau_acc) / local_majorant;
+            Mask reached = active_tracking && (tau_next >= desired_tau) && (t_precise < maxt);
+            Mask escaped = active_tracking && (t_next >= maxt);
+
+            dr::masked(dda_t, active_tracking) = dr::select(reached, t_precise, dr::select(escaped, dr::Infinity<Float>, t_next));
+            dr::masked(dda_tmax, active_tracking && !reached) = dda_tmax + tmax_update;
+            dr::masked(tau_acc, active_tracking && !reached) = tau_next;
+
+            needs_new_target = active_tracking && (reached || escaped);
+
+            dr::masked(mei.t, needs_new_target) = dda_t;
+            dr::masked(mei.p, needs_new_target) = ray(mei.t);
+
+            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, needs_new_target);
+            Float r = dr::select(reached, mei.sigma_t[0] / local_majorant, 0);
+
+            dr::masked(tau_accum_f, active_tracking) *= (Spectrum(1.f) - r);
+            dr::masked(T, reached) += tau_accum_f * dr::exp(- local_majorant * mei.sigma_t[0] * (maxt - dda_t));
+
+            // Prepare for next iteration
+            active_tracking &= !escaped; 
+
+            dr::masked(mei.t, escaped) =  dr::Infinity<Float>;
+            dr::masked(mei.p, escaped) =  ray(mei.t);
+            dr::masked(TotalTr, escaped) = T; 
         }
     } else {
         std::cout<<"Estimator: "<<estimator_selector<<std::endl;
         NotImplementedError("select one of the following estimators: rt, rrt, rt_local, rrt_local");
     }
-    return {mei, TotalTr};
+    
+    return {mei, dr::clamp(TotalTr,0.f,1.f)};
 }
 
 

@@ -29,7 +29,5 @@ __pycache__
 /docs/src/generated
 /docs/resources
 /scenes*
-/test_renders/volpath_novak14_supervoxels.exr
-/test_renders/volpath_novak14_supervoxels_2.exr
-/test_renders/volpath_novak14_supervoxels_3.exr
+/test_renders*
 # test_render.py

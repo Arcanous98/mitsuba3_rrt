@@ -386,7 +386,6 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
     Float t(mint);
     Spectrum TotalTr(1.f);
     Float max_delta_t = maxt-mint;
-    Float T(1.f);
     Mask active_tracking(active);
     using PCG32 = mitsuba::PCG32<UInt32>;
     PCG32 sp;
@@ -398,6 +397,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
     }
     if (estimator_selector == 0) {
         // Ratio Tracking
+        Spectrum T(1.f);
         Spectrum combined_extinction = get_majorant(mei, active);
         Float m = combined_extinction[0]; // default control mu is the average of volume densities
         dr::Loop<Mask> loop("Ratio Tracking Estimator");
@@ -423,6 +423,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
         }
     } else if (estimator_selector == 1) {
         // Residual Ratio Trackings
+        Spectrum T(1.f);
         Spectrum combined_extinction = get_majorant(mei, active);
         Float m = combined_extinction[0]; // default control mu is the average of volume densities
         Spectrum combined_control_extinction = get_control_sigma_t(mei, active_tracking);
@@ -526,7 +527,6 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
         Float desired_tau = -dr::log(1 - sp.template next_float<Float>(active_tracking));
         dr::Loop<Mask> loop("Residual Ratio Tracking Integrator with Local Majorants and Control Coeffs");
         loop.put(Tr, Tc, TotalTr, dda_t, dda_tdelta, dda_tmax, mei, local_majorant, local_control, local_residual, active_tracking, needs_new_target, desired_tau, tau_acc, sp.state, sp.inc);
-        // sampler->loop_put(loop);
         loop.init();
         while (loop(dr::detach(active_tracking))){
             dr::masked(desired_tau, active_tracking && needs_new_target) = -dr::log(1 - sp.template next_float<Float>(needs_new_target));
@@ -584,10 +584,8 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
         Float m = combined_extinction[0]; // default control mu is the average of volume densities
         dr::Loop<Mask> loop("Next Flight Estimator");
         loop.put(T, t, tau_accum_f, mei, TotalTr, active_tracking, m, sp.state, sp.inc);
-        // sampler->loop_put(loop);
         loop.init();
         while (loop(dr::detach(active_tracking))){
-            // Float sample = sampler->next_1d(active_tracking);
             Float sample = sp.template next_float<Float>(active_tracking);
             t -= (dr::log(1 - sample) / m);
 
@@ -617,7 +615,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
         loop.init();
         while (loop(dr::detach(active_tracking))){
             // Float sample = sampler->next_1d(active_tracking);
-            dr::masked(step, active_tracking) = dr::minimum(step, maxt -t);
+            dr::masked(step, active_tracking) = dr::minimum(step, maxt - t);
 
             Float jump = t + sp.template next_float<Float>(active_tracking) * step;
 
@@ -633,9 +631,108 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
             dr::masked(T, active_tracking) += mei.sigma_t * step;
             dr::masked(t, active_tracking) += step;
         }
+    } else if (estimator_selector == 6){
+        // Power Series Cumulative
+        Spectrum combined_extinction = get_majorant(mei, active_tracking);
+        Spectrum T(0.f);
+        Float i(1.f);
+        Spectrum accum_weight(1.f);
+        Float rr = dr::clamp(sp.template next_float<Float>(active_tracking) + 0.00001, 0.f, 1.f);
+
+        Spectrum Tc = dr::exp(- max_delta_t * combined_extinction);
+
+        dr::Loop<Mask> loop("Power Series Cumulative Estimator");
+        loop.put(i, T, rr, accum_weight, mei, TotalTr, active_tracking, sp.state, sp.inc);
+        loop.init();
+        while (loop(dr::detach(active_tracking))){
+            Float random_t = sp.template next_float<Float>(active_tracking) * max_delta_t + mint;
+            dr::masked(mei.p, active_tracking) = ray(random_t);
+
+            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_tracking);
+            Spectrum weight_i = (1.f / i) * (combined_extinction - mei.sigma_t) * max_delta_t;
+
+            dr::masked(T, active_tracking) += accum_weight;
+            dr::masked(accum_weight, active_tracking) *= weight_i;
+            
+            Float max_abs_w = dr::max(dr::abs(accum_weight));
+
+            Mask reject = active_tracking && max_abs_w < 1.f;
+            Mask terminate_recoursion = active_tracking && (max_abs_w <= rr);
+            active_tracking &= !terminate_recoursion;
+            
+            dr::masked(rr, reject && !terminate_recoursion) /= max_abs_w;
+            dr::masked(i, active_tracking) += 1.f;
+            dr::masked(accum_weight, reject && !terminate_recoursion) /= max_abs_w;
+
+            dr::masked(mei.t, terminate_recoursion) =  dr::Infinity<Float>;
+            dr::masked(mei.p, terminate_recoursion) =  ray(mei.t);
+            dr::masked(TotalTr, terminate_recoursion) = T * Tc;
+        }
+    } else if (estimator_selector == 7){
+        // Power Series CMF
+        Spectrum combined_extinction = get_majorant(mei, active_tracking);
+        Spectrum accum_cdf(0.f);
+        
+        Spectrum T(0.f);
+        Float i(1.f);
+        Spectrum accum_weight(1.f);
+        Float rr = dr::clamp(sp.template next_float<Float>(active_tracking) + 0.00001, 0.f, 1.f);
+
+        Spectrum Tc = dr::exp(- max_delta_t * combined_extinction);
+        Spectrum tau_c =  max_delta_t * combined_extinction;
+        Float cutoff(0.99f);
+        Spectrum prev_pdf = Tc;
+        Mask active_cdf_tracking(active_tracking);
+
+        dr::Loop<Mask> loop_cdf("Power Series CMF Estimator - CDF");
+        loop_cdf.put(i, T, accum_cdf, prev_pdf, accum_weight, mei, active_cdf_tracking, sp.state, sp.inc);
+        loop_cdf.init();
+        while (loop_cdf(dr::detach(active_cdf_tracking))){
+            Float random_t = sp.template next_float<Float>(active_cdf_tracking) * max_delta_t + mint;
+            dr::masked(mei.p, active_cdf_tracking) = ray(random_t);
+            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_cdf_tracking);
+            
+            dr::masked(accum_cdf, active_cdf_tracking) += prev_pdf;
+            
+            Spectrum weight_i = (1.f / i) * (combined_extinction - mei.sigma_t) * max_delta_t;
+            dr::masked(prev_pdf, active_cdf_tracking) *= (1.f / i) * tau_c;
+
+            dr::masked(T, active_cdf_tracking) += accum_weight;
+            dr::masked(accum_weight, active_cdf_tracking) *= weight_i;
+            dr::masked(i, active_cdf_tracking) += 1.f;
+        
+            Mask terminate_recoursion = active_cdf_tracking && (accum_cdf[0] >= cutoff);
+            active_cdf_tracking &= !terminate_recoursion;
+        } 
+
+        dr::Loop<Mask> loop("Power Series CMF Estimator");
+        loop.put(i, T, rr, prev_pdf, accum_cdf, accum_weight, mei, TotalTr, active_tracking, sp.state, sp.inc);
+        loop.init();
+        while (loop(dr::detach(active_tracking))){
+            Float rr_cut(tau_c[0]/i);
+            dr::masked(T, active_tracking) += accum_weight;
+            Mask terminate_recoursion = active_tracking && (rr_cut <= rr);
+            active_tracking &= !terminate_recoursion;
+
+            dr::masked(accum_cdf, active_tracking) += prev_pdf;
+
+            Float random_t = sp.template next_float<Float>(active_tracking) * max_delta_t + mint;
+            dr::masked(mei.p, active_tracking) = ray(random_t);
+            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_tracking);
+            
+            Spectrum weight_i = (1.f / i) * (combined_extinction - mei.sigma_t) * max_delta_t;
+
+            dr::masked(prev_pdf, active_tracking) *= (1.f / i) * tau_c;
+            dr::masked(accum_weight, active_tracking) *= (weight_i / rr_cut);
+            dr::masked(i, active_tracking) += 1.f;
+
+            dr::masked(mei.t, terminate_recoursion) =  dr::Infinity<Float>;
+            dr::masked(mei.p, terminate_recoursion) =  ray(mei.t);
+            dr::masked(TotalTr, terminate_recoursion) = T * Tc;
+        } 
     } else {
         std::cout<<"Estimator: "<<estimator_selector<<std::endl;
-        NotImplementedError("select one of the following estimators: rt, rrt, rt_local, rrt_local, nf");
+        NotImplementedError("select one of the following estimators: rt, rrt, rt_local, rrt_local, nf, rm, ps_cum, ps_cmf");
     }
     
     return {mei, TotalTr};

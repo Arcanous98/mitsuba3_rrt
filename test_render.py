@@ -239,9 +239,9 @@ if __name__ == '__main__':
     # test_novak14_supervoxels()
     init_time = time.time()
     loading_time = render_cloud(integrator_name="volpath_novak14",
-                                estimator="rrt_local",
+                                estimator="ps_cum",
                                 distance_sampler="ff_local",
-                                spp=128,
+                                spp=8,
                                 init_time=init_time)
     rendering_time = time.time() - init_time
     print("Rendering time (including jitting): "+str(rendering_time - loading_time))

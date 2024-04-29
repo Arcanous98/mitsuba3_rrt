@@ -30,4 +30,6 @@ __pycache__
 /docs/resources
 /scenes*
 /test_renders*
+/absorption_exp_figures*
+/high_albedo_exp_figures*
 # test_render.py

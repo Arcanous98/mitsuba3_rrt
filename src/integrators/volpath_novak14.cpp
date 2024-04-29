@@ -93,8 +93,12 @@ public:
             m_est = 4;
         } else if (estimator == "rm") {
             m_est = 5;
+        } else if (estimator == "ps_cum") {
+            m_est = 6;
+        } else if (estimator == "ps_cmf") {
+            m_est = 7;
         } else {
-            NotImplementedError("Unsupported estimator. Select one of the following: rt, rrt, rt_local, rrt_local, rm, nf");
+            NotImplementedError("Unsupported estimator. Select one of the following: rt, rrt, rt_local, rrt_local, rm, nf, ps_cum, ps_cmf");
         }
 
         if (sampler == "ff") {

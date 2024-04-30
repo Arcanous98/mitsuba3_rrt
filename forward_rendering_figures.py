@@ -180,7 +180,9 @@ def render_volume(integrator_name="volpath_novak14",
                  run_count=1,
                  spp=1,
                  init_time=0,
-                 output_dir = "./test_renders/"):
+                 output_dir = "./test_renders/",
+                 max_depth = 100,
+                 rr_depth  = 1000):
 
     output_dir = os.path.join(output_dir)
     os.makedirs(output_dir, exist_ok=True)
@@ -194,15 +196,15 @@ def render_volume(integrator_name="volpath_novak14",
             output_name = output_dir+"disney_cloud_"+integrator_name+"_"+str(spp)+".exr"
             integrator =  mi.load_dict({
                         'type': integrator_name,
-                        'max_depth': 100,
-                        'rr_depth': 1000,
+                        'max_depth': max_depth,
+                        'rr_depth': rr_depth,
                     })
         else:
             output_name = output_dir+"disney_cloud_"+integrator_name+"_"+estimator+"_"+distance_sampler+"_"+str(spp)+".exr"
             integrator =  mi.load_dict({
                             'type': integrator_name,
-                            'max_depth': 100,
-                            'rr_depth': 1000,
+                            'max_depth': max_depth,
+                            'rr_depth': rr_depth,
                             'transmittance_estimator': estimator, #rt, rrt, rt_local, rrt_local
                             'distance_sampler': distance_sampler, #ff, ff_local
                         })
@@ -211,15 +213,15 @@ def render_volume(integrator_name="volpath_novak14",
                 output_name = output_dir+"smoke_"+integrator_name+"_"+str(spp)+".exr"
                 integrator =  mi.load_dict({
                             'type': integrator_name,
-                            'max_depth': 100,
-                            'rr_depth': 1000,
+                            'max_depth': max_depth,
+                            'rr_depth': rr_depth,
                         })
         else:
             output_name = output_dir+"smoke_"+integrator_name+"_"+estimator+"_"+distance_sampler+"_"+str(spp)+".exr"
             integrator =  mi.load_dict({
                             'type': integrator_name,
-                            'max_depth': 100,
-                            'rr_depth': 1000,
+                            'max_depth': max_depth,
+                            'rr_depth': rr_depth,
                             'transmittance_estimator': estimator, #rt, rrt, rt_local, rrt_local
                             'distance_sampler': distance_sampler, #ff, ff_local
                         })
@@ -251,8 +253,8 @@ def run_experiment(asset = "cloud",
     
     estimators = ["rt", "rrt", "rt_local", "rrt_local", "nf", "rm", "ps_cum", "ps_cmf"]
     samplers   = ["ff_weighted_local"]
-    spp_counts = [1, 2, 4, 8]
-    run_count  = 10
+    spp_counts = [8]
+    run_count  = 1
     results_txt = {}
 
     if asset == "cloud":
@@ -267,7 +269,7 @@ def run_experiment(asset = "cloud",
                                 absorptive_only_test = absorptive_only_test,
                                 render_wdas_cloud = render_wdas_cloud, 
                                 run_count = 1,
-                                spp = 1024,
+                                spp = 128,
                                 output_dir = output_dir)
 
     for estimator in estimators:
@@ -323,4 +325,4 @@ def run_experiment(asset = "cloud",
 
 if __name__ == '__main__':
     run_experiment(asset = "smoke",
-                   experiment = "absorption")
+                   experiment = "high_albedo")

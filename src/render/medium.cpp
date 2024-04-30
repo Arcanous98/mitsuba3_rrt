@@ -35,6 +35,9 @@ MI_VARIANT Medium<Float, Spectrum>::Medium(const Properties &props)
     m_sample_emitters = props.get<bool>("sample_emitters", true);
     dr::set_attr(this, "use_emitter_sampling", m_sample_emitters);
     dr::set_attr(this, "phase_function", m_phase_function.get());
+    // Properties props_sampler("stratified");
+    // ref<Sampler> sp_strat = static_cast<Sampler *>(PluginManager::instance()->create_object<Sampler>(props_sampler));
+    // sp_strat->seed(sp.template next_uint32(active_tracking), idx);
 }
 
 MI_VARIANT Medium<Float, Spectrum>::~Medium() {}
@@ -170,13 +173,10 @@ Medium<Float, Spectrum>::sample_interaction_real(const Ray3f &ray,
         Mask did_scatter = valid_mei && (sp.template next_float<Float>(active) < r);
         mei[did_scatter] = mei_next;
 
-        // Spectrum event_pdf = mei_next.sigma_t / combined_extinction;
-        // event_pdf = dr::select(did_scatter, event_pdf, 1.f - event_pdf);
-        // weight[active] *= event_pdf / dr::detach(event_pdf);
-
         mei_next.mint = sampled_t;
         escaped |= active && (mei_next.mint >= maxt);
         active &= !did_scatter && !escaped;
+        mei.weight = dr::select(did_scatter, mei.sigma_s[0] / mei.sigma_t[0], 1.f);
     }
 
     dr::masked(mei.t, escaped) = dr::Infinity<Float>;
@@ -260,7 +260,99 @@ Medium<Float, Spectrum>::sample_interaction_real_super(const Ray3f &ray,
         active_tracking &= !scattering;
         active_tracking &= !escaped; 
 
-        mei.t = dr::select(scattering, dda_t, dr::Infinity<Float>);     
+        mei.t = dr::select(scattering, dda_t, dr::Infinity<Float>);
+        mei.weight = dr::select(scattering, mei.sigma_s[0] / mei.sigma_t[0], 1.f);
+    }
+    mei.p = ray(mei.t);
+    return mei;
+}
+
+MI_VARIANT
+typename Medium<Float, Spectrum>::MediumInteraction3f
+Medium<Float, Spectrum>::sample_interaction_super_weighted_dt(const Ray3f &ray,
+                                                            UInt32 seed_v0,
+                                                            UInt32 seed_v1,
+                                                            Mask _active) const {
+    MI_MASKED_FUNCTION(ProfilerPhase::MediumSample, _active);
+
+    auto [mei, mint, maxt, active] = prepare_interaction_sampling(ray, _active);
+    auto [dda_t, dda_tmax, dda_tdelta] = prepare_dda_traversal(
+            m_majorant_grid.get(), ray, mint, maxt, active);
+
+    Float sampled_t(0.f);
+    // Ratio Tracking
+    Float tau_acc(0.f);
+    using PCG32 = mitsuba::PCG32<UInt32>;
+    PCG32 sp;
+    if constexpr (dr::is_array_v<Float>) {
+        sp.seed(1, seed_v0, seed_v1);
+    } else {
+        sp.seed(1, seed_v0, PCG32_DEFAULT_STREAM);
+    }
+
+    Float desired_tau = 0.f;
+    Float weight(1.f);
+    Mask active_tracking(active);
+    Mask needs_new_target(active);
+    dr::Loop<Mask> loop("Ratio Tracking Distance Sampler with DDA SuperGrid");
+    Float local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
+    
+    loop.put(weight, dda_t, dda_tmax, dda_tdelta, mei, local_majorant, tau_acc, needs_new_target, active_tracking, desired_tau, sp.state, sp.inc);
+    // sampler->loop_put(loop);
+    loop.init();
+    while (loop(dr::detach(active_tracking))){
+        dr::masked(desired_tau, active_tracking && needs_new_target) = -dr::log(1 - sp.template next_float<Float>(needs_new_target));
+        dr::masked(tau_acc, active_tracking && needs_new_target) = 0.f;
+
+        Float t_next = dr::min(dda_tmax);
+        Vector3f tmax_update;
+        Mask got_assigned = false;
+        for (size_t k = 0; k < 3; ++k) {
+            Mask active_k = dr::eq(dda_tmax[k], t_next);
+            tmax_update[k] = dr::select(!got_assigned && active_k, dda_tdelta[k], 0);
+            got_assigned |= active_k;
+        }
+
+        dr::masked(mei.t, active_tracking) = 0.5f * (dda_t + t_next);
+        dr::masked(mei.p, active_tracking) = ray(mei.t);
+        
+        local_majorant = m_majorant_grid->eval_1(mei, active_tracking);
+        Float tau_next = tau_acc + local_majorant * (t_next - dda_t);
+
+        // For rays that will stop within this cell, figure out
+        // the precise `t` parameter where `desired_tau` is reached.
+        Float t_precise = dda_t + (desired_tau - tau_acc) / local_majorant;
+        Mask reached = active_tracking && (tau_next >= desired_tau) && (t_precise < maxt);
+        Mask escaped = active_tracking && (t_next >= maxt);
+
+        dr::masked(dda_t, active_tracking) = dr::select(reached, t_precise, dr::select(escaped, dr::Infinity<Float>, t_next));
+        dr::masked(dda_tmax, active_tracking && !reached) = dda_tmax + tmax_update;
+        dr::masked(tau_acc, active_tracking && !reached) = tau_next;
+
+        needs_new_target = active_tracking && (reached || escaped);
+
+        dr::masked(mei.t, needs_new_target) = dda_t;
+        dr::masked(mei.p, needs_new_target) = ray(mei.t);
+
+        std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, needs_new_target);
+        // we assume that the local majorant is ALWAYS bigger than the local density eval
+        Float residual = dr::select(dr::neq(local_majorant, 0), local_majorant - mei.sigma_t[0], 1.f);
+        Float w_null = dr::select(dr::neq(local_majorant, 0), residual / local_majorant, 1.f);
+        Float w_real = dr::select(dr::neq(local_majorant, 0), mei.sigma_t[0] / local_majorant, 1.f);
+        Float p_null = dr::select(dr::neq(mei.sigma_t[0], 0), residual / (residual + mei.sigma_t[0]), 1.f);
+        Float p_real = dr::select(dr::neq(mei.sigma_t[0], 0), mei.sigma_t[0] / (residual + mei.sigma_t[0]), 0.f);
+        Float w_scattering = dr::select(dr::neq(mei.sigma_t[0], 0), mei.sigma_s[0] / mei.sigma_t[0], 1.f);
+
+        Mask scattering = reached && sp.template next_float<Float>(reached) < p_real;
+
+        // Prepare for next iteration
+        active_tracking &= !scattering;
+        active_tracking &= !escaped; 
+
+        mei.t = dr::select(scattering, dda_t, dr::Infinity<Float>);
+        mei.weight = dr::select(scattering, weight * w_real * w_scattering / p_real, 1.f);
+
+        dr::masked(weight, reached) *= w_null / p_null;
     }
     mei.p = ray(mei.t);
     return mei;
@@ -377,6 +469,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
                                     UInt32 seed_v0,
                                     UInt32 seed_v1,
                                     uint32_t estimator_selector,
+                                    uint32_t idx,
                                     Mask _active) const {
     MI_MASKED_FUNCTION(ProfilerPhase::MediumEvaluate, _active);
 
@@ -387,6 +480,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
     Spectrum TotalTr(1.f);
     Float max_delta_t = maxt-mint;
     Mask active_tracking(active);
+
     using PCG32 = mitsuba::PCG32<UInt32>;
     PCG32 sp;
     
@@ -634,21 +728,50 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
     } else if (estimator_selector == 6){
         // Power Series Cumulative
         Spectrum combined_extinction = get_majorant(mei, active_tracking);
+        // TODO: implement a piece-wise PDF using the majorant grid to importance sample with a better residual
+        
         Spectrum T(0.f);
         Float i(1.f);
         Spectrum accum_weight(1.f);
-        Float rr = dr::clamp(sp.template next_float<Float>(active_tracking) + 0.00001, 0.f, 1.f);
+        // Stratified sampler
+        Float sample(0.f);
+        UInt32 dim_index(0);
+        if (true) {
+            UInt32 sample_indices = dim_index * idx;
+            dr::masked(dim_index, active_tracking) +=1;
+            UInt32 perm_seed = seed_v0 + dim_index;
+            UInt32 p = permute_kensler(sample_indices, uint32_t(16), perm_seed, active_tracking);
+            Float j = sp.template next_float<Float>(active_tracking);
+            sample = (p + j) / uint32_t(16);
+        } else {
+            sample = sp.template next_float<Float>(active_tracking);
+        }
+        //
+        Float rr = dr::clamp(sample, 0.00001f, 1.f);
 
         Spectrum Tc = dr::exp(- max_delta_t * combined_extinction);
 
         dr::Loop<Mask> loop("Power Series Cumulative Estimator");
-        loop.put(i, T, rr, accum_weight, mei, TotalTr, active_tracking, sp.state, sp.inc);
+        loop.put(dim_index, i, T, rr, accum_weight, mei, TotalTr, active_tracking, sp.state, sp.inc);
         loop.init();
         while (loop(dr::detach(active_tracking))){
-            Float random_t = sp.template next_float<Float>(active_tracking) * max_delta_t + mint;
+            // Stratified sampler
+            Float sample(0.f);
+            if (true) {
+                UInt32 sample_indices = dim_index * idx;
+                dr::masked(dim_index, active_tracking) +=1;
+                UInt32 perm_seed = seed_v0 + dim_index;
+                UInt32 p = permute_kensler(sample_indices, uint32_t(16), perm_seed, active_tracking);
+                Float j = sp.template next_float<Float>(active_tracking);
+                sample = (p + j) / uint32_t(16);
+            } else {
+                sample = sp.template next_float<Float>(active_tracking);
+            }
+            Float random_t = sample * max_delta_t + mint;
             dr::masked(mei.p, active_tracking) = ray(random_t);
 
             std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_tracking);
+            
             Spectrum weight_i = (1.f / i) * (combined_extinction - mei.sigma_t) * max_delta_t;
 
             dr::masked(T, active_tracking) += accum_weight;
@@ -657,7 +780,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
             Float max_abs_w = dr::max(dr::abs(accum_weight));
 
             Mask reject = active_tracking && max_abs_w < 1.f;
-            Mask terminate_recoursion = active_tracking && (max_abs_w <= rr);
+            Mask terminate_recoursion = active_tracking && (max_abs_w <= rr) || (dr::min(T * Tc) >= 1.f);
             active_tracking &= !terminate_recoursion;
             
             dr::masked(rr, reject && !terminate_recoursion) /= max_abs_w;
@@ -669,67 +792,76 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
             dr::masked(TotalTr, terminate_recoursion) = T * Tc;
         }
     } else if (estimator_selector == 7){
-        // Power Series CMF
+        // Power Series CMF -- same as Power Series Cumulative but does not start RR until a certain amount of density has been reached
+        Float sample(0.f);
+        UInt32 dim_index(0);
+        if (true) {
+            UInt32 sample_indices = dim_index * idx;
+            dr::masked(dim_index, active_tracking) +=1;
+            UInt32 perm_seed = seed_v0 + dim_index;
+            UInt32 p = permute_kensler(sample_indices, uint32_t(16), perm_seed, active_tracking);
+            Float j = sp.template next_float<Float>(active_tracking);
+            sample = (p + j) / uint32_t(16);
+        } else {
+            sample = sp.template next_float<Float>(active_tracking);
+        }
+
         Spectrum combined_extinction = get_majorant(mei, active_tracking);
         Spectrum accum_cdf(0.f);
-        
+     
         Spectrum T(0.f);
         Float i(1.f);
         Spectrum accum_weight(1.f);
-        Float rr = dr::clamp(sp.template next_float<Float>(active_tracking) + 0.00001, 0.f, 1.f);
+        Float rr = dr::clamp(sample, 0.00001f, 1.f); // dr::clamp(sp.template next_float<Float>(active_tracking), 0.00001f, 1.f);
 
-        Spectrum Tc = dr::exp(- max_delta_t * combined_extinction);
         Spectrum tau_c =  max_delta_t * combined_extinction;
+        Spectrum Tc = dr::exp(- tau_c);
         Float cutoff(0.99f);
         Spectrum prev_pdf = Tc;
         Mask active_cdf_tracking(active_tracking);
 
-        dr::Loop<Mask> loop_cdf("Power Series CMF Estimator - CDF");
-        loop_cdf.put(i, T, accum_cdf, prev_pdf, accum_weight, mei, active_cdf_tracking, sp.state, sp.inc);
+        dr::Loop<Mask> loop_cdf("Power Series CMF Estimator");
+        loop_cdf.put(dim_index, i, T, TotalTr, rr, accum_cdf, prev_pdf, accum_weight, mei, active_cdf_tracking, active_tracking, sp.state, sp.inc);
         loop_cdf.init();
-        while (loop_cdf(dr::detach(active_cdf_tracking))){
-            Float random_t = sp.template next_float<Float>(active_cdf_tracking) * max_delta_t + mint;
-            dr::masked(mei.p, active_cdf_tracking) = ray(random_t);
-            std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_cdf_tracking);
-            
-            dr::masked(accum_cdf, active_cdf_tracking) += prev_pdf;
-            
-            Spectrum weight_i = (1.f / i) * (combined_extinction - mei.sigma_t) * max_delta_t;
-            dr::masked(prev_pdf, active_cdf_tracking) *= (1.f / i) * tau_c;
-
-            dr::masked(T, active_cdf_tracking) += accum_weight;
-            dr::masked(accum_weight, active_cdf_tracking) *= weight_i;
-            dr::masked(i, active_cdf_tracking) += 1.f;
-        
-            Mask terminate_recoursion = active_cdf_tracking && (accum_cdf[0] >= cutoff);
-            active_cdf_tracking &= !terminate_recoursion;
-        } 
-
-        dr::Loop<Mask> loop("Power Series CMF Estimator");
-        loop.put(i, T, rr, prev_pdf, accum_cdf, accum_weight, mei, TotalTr, active_tracking, sp.state, sp.inc);
-        loop.init();
-        while (loop(dr::detach(active_tracking))){
+        while (loop_cdf(dr::detach(active_tracking))){
             Float rr_cut(tau_c[0]/i);
-            dr::masked(T, active_tracking) += accum_weight;
-            Mask terminate_recoursion = active_tracking && (rr_cut <= rr);
-            active_tracking &= !terminate_recoursion;
-
-            dr::masked(accum_cdf, active_tracking) += prev_pdf;
-
-            Float random_t = sp.template next_float<Float>(active_tracking) * max_delta_t + mint;
+            Mask start_rr = active_tracking && !active_cdf_tracking;
+            Mask terminate_rr = start_rr && (rr_cut <= rr) || (dr::min(T * Tc) >= 1.f);
+            active_tracking &= !terminate_rr;
+            // stratified sampler
+            Float sample(0.f);
+            if (true) {
+                UInt32 sample_indices = dim_index * idx;
+                dr::masked(dim_index, active_tracking) +=1;
+                UInt32 perm_seed = seed_v0 + dim_index;
+                UInt32 p = permute_kensler(sample_indices, uint32_t(16), perm_seed, active_tracking);
+                Float j = sp.template next_float<Float>(active_tracking);
+                sample = (p + j) / uint32_t(16);
+            } else {
+                sample = sp.template next_float<Float>(active_tracking);
+            }
+            //
+            Float random_t = sample * max_delta_t + mint; //sp.template next_float<Float>(active_tracking) * max_delta_t + mint;
             dr::masked(mei.p, active_tracking) = ray(random_t);
             std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_tracking);
             
+            dr::masked(accum_cdf, active_tracking) += prev_pdf;
+            
             Spectrum weight_i = (1.f / i) * (combined_extinction - mei.sigma_t) * max_delta_t;
-
             dr::masked(prev_pdf, active_tracking) *= (1.f / i) * tau_c;
-            dr::masked(accum_weight, active_tracking) *= (weight_i / rr_cut);
-            dr::masked(i, active_tracking) += 1.f;
 
-            dr::masked(mei.t, terminate_recoursion) =  dr::Infinity<Float>;
-            dr::masked(mei.p, terminate_recoursion) =  ray(mei.t);
-            dr::masked(TotalTr, terminate_recoursion) = T * Tc;
-        } 
+            dr::masked(T, active_tracking) += accum_weight;
+            dr::masked(rr, start_rr) /= rr_cut;
+            dr::masked(accum_weight, active_tracking) *= dr::select(start_rr, weight_i / rr_cut, weight_i);
+            dr::masked(i, active_tracking) += 1.f;
+        
+            Mask terminate_recoursion = active_cdf_tracking && (accum_cdf[0] >= cutoff);
+            active_cdf_tracking &= !terminate_recoursion;
+
+            dr::masked(mei.t, terminate_rr) =  dr::Infinity<Float>;
+            dr::masked(mei.p, terminate_rr) =  ray(mei.t);
+            dr::masked(TotalTr, terminate_rr) = T * Tc;
+        }
     } else {
         std::cout<<"Estimator: "<<estimator_selector<<std::endl;
         NotImplementedError("select one of the following estimators: rt, rrt, rt_local, rrt_local, nf, rm, ps_cum, ps_cmf");

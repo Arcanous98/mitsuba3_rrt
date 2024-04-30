@@ -57,10 +57,7 @@ public:
     MI_INLINE ref<Volume> majorant_grid() const {
         return m_majorant_grid;
     }
-    // /// Returns a reference to the medium sampler
-    // MI_INLINE ref<Sampler> medium_sampler() const {
-    //     return m_medium_sampler;
-    // }
+
     /// Return true if a majorant supergrid is available.
     MI_INLINE bool has_majorant_grid() const {
         return (bool) m_majorant_grid;
@@ -131,6 +128,8 @@ public:
     
     MediumInteraction3f sample_interaction_real_super(const Ray3f &ray, UInt32 v0, UInt32 v1, Mask active) const;
 
+    MediumInteraction3f sample_interaction_super_weighted_dt(const Ray3f &ray, UInt32 v0, UInt32 v1, Mask active) const;
+
     /**
      * Compute the ray-medium overlap range and prepare a
      * medium interaction to be filled by a sampling routine.
@@ -140,7 +139,7 @@ public:
     prepare_interaction_sampling(const Ray3f &ray, Mask active) const;
 
     std::pair<MediumInteraction3f, UnpolarizedSpectrum>
-    integrate_tr(const Ray3f &ray, UInt32 v0, UInt32 v1, uint32_t estimator_selector, Mask active) const;
+    integrate_tr(const Ray3f &ray, UInt32 v0, UInt32 v1, uint32_t estimator_selector, uint32_t idx, Mask active) const;
 
     /// Return the phase function of this medium
     MI_INLINE const PhaseFunction *phase_function() const {
@@ -219,6 +218,7 @@ DRJIT_VCALL_TEMPLATE_BEGIN(mitsuba::Medium)
     DRJIT_VCALL_METHOD(sample_interaction)
     DRJIT_VCALL_METHOD(sample_interaction_real)
     DRJIT_VCALL_METHOD(sample_interaction_real_super)
+    DRJIT_VCALL_METHOD(sample_interaction_super_weighted_dt)
     DRJIT_VCALL_METHOD(transmittance_eval_pdf)
     DRJIT_VCALL_METHOD(integrate_tr)
     DRJIT_VCALL_METHOD(get_scattering_coefficients)

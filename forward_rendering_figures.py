@@ -250,7 +250,7 @@ def run_experiment(asset = "cloud",
         absorptive_only_test = False
     
     estimators = ["rt", "rrt", "rt_local", "rrt_local", "nf", "rm", "ps_cum", "ps_cmf"]
-    samplers   = ["ff_local"]
+    samplers   = ["ff_weighted_local"]
     spp_counts = [1, 2, 4, 8]
     run_count  = 10
     results_txt = {}

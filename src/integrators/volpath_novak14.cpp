@@ -105,8 +105,10 @@ public:
             m_sampler = 0;
         } else if (sampler == "ff_local") {
             m_sampler = 1;
+        } else if (sampler == "ff_weighted_local") {
+            m_sampler = 2;
         } else {
-            NotImplementedError("Unsupported sampler. Select one of the following: ff, ff_local");
+            NotImplementedError("Unsupported sampler. Select one of the following: ff, ff_local, ff_weighted_local");
         }
 
     }
@@ -197,11 +199,13 @@ public:
                     // dr::masked(throughput, active_medium) *= weight;
                 } else if (m_sampler == 1){
                     dr::masked(mei, active_medium && !absorptive) = medium->sample_interaction_real_super(ray, v0, v1, active_medium && !absorptive); //free flight sampling with supervoxel majorants
+                } else if (m_sampler == 2){
+                    dr::masked(mei, active_medium && !absorptive) = medium->sample_interaction_super_weighted_dt(ray, v0, v1, active_medium && !absorptive); //free flight sampling with supervoxel majorants
                 } else {
                     std::cout<<"Sampler: "<<m_sampler<<std::endl;
-                    NotImplementedError("select one of the following distance samplers: ff, ff_local");
+                    NotImplementedError("select one of the following distance samplers: ff, ff_local, ff_weighted_local");
                 }
-                std::tie(dr::masked(mei, absorptive), dr::masked(integral_tr, absorptive)) = medium->integrate_tr(ray, v0, v1, m_est, absorptive);
+                std::tie(dr::masked(mei, absorptive), dr::masked(integral_tr, absorptive)) = medium->integrate_tr(ray, v0, v1, m_est, sampler->wavefront_size(), absorptive);
                 dr::masked(throughput, absorptive) *= (integral_tr);
                 
                 dr::masked(ray.maxt, active_medium && medium->is_homogeneous() && mei.is_valid()) = mei.t;
@@ -218,7 +222,7 @@ public:
 
                 dr::masked(depth, active_medium) += 1;
                 dr::masked(last_scatter_event, active_medium) = mei;
-                dr::masked(throughput, active_medium && !absorptive) *= (mei.sigma_s / mei.sigma_t);
+                dr::masked(throughput, active_medium && !absorptive) *= mei.weight;//(mei.sigma_s / mei.sigma_t);
             }
             
             // Dont estimate lighting if we exceeded number of bounces
@@ -391,7 +395,7 @@ public:
                 } else {
                     v0 = UInt32(sampler->next_1d(active_medium) * UINT32_MAX);
                 }
-                auto [mei, integral_tr] = medium->integrate_tr(ray, v0, v1, m_est, active_medium); // transmission integral \w supervoxel majorant and control grid
+                auto [mei, integral_tr] = medium->integrate_tr(ray, v0, v1, m_est, sampler->wavefront_size(), active_medium); // transmission integral \w supervoxel majorant and control grid
 
                 Mask intersect = needs_intersection && active_medium;
                 if (dr::any_or<true>(intersect))

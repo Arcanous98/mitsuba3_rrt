@@ -171,6 +171,8 @@ public:
 
             m_control_sigma_t = dr::opaque<Float>(dr::maximum(1e-6f, vmean));
             m_max_density = dr::opaque<Float>(dr::maximum(1e-6f, vmax));
+            Log(Info, "Heterogeneous medium will use majorant: %s (majorant factor: %s)",
+                m_max_density, m_majorant_factor);
         } else {
             const ScalarFloat vmax = m_majorant_factor * scale * m_sigmat->max();
             const ScalarFloat vmean = m_majorant_factor * scale * m_sigmat->avg();

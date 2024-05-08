@@ -164,6 +164,7 @@ public:
 
     GridVolume(const Properties &props) : Base(props) {
         std::string filter_type_str = props.string("filter_type", "trilinear");
+        bool override_resolution = props.get<bool>("override_resolution", false);
         dr::FilterMode filter_mode;
         if (filter_type_str == "nearest")
             filter_mode = dr::FilterMode::Nearest;
@@ -314,15 +315,35 @@ public:
                 m_avg = (float) dr::mean_nested(dr::detach(m_texture.value()));
                 m_channel_count = channel_count;
             } else {
-                Log(Debug, "No crash");
                 size_t shape[4] = {
                     (size_t) res.z(),
                     (size_t) res.y(),
                     (size_t) res.x(),
                     m_volume_grid->channel_count()
                 };
-                m_texture = Texture3f(TensorXf(m_volume_grid->data(), 4, shape),
-                                      m_accel, m_accel, filter_mode, wrap_mode);
+                if (override_resolution){
+                    // I'm sorry for this but too lazy to recode supervoxels to support per-axis grid scaling factors now
+                    shape[0] = (size_t) 944;
+                    shape[1] = (size_t) 848;
+                    shape[2] = (size_t) 928;
+                    ScalarUInt32 new_size = shape[0] * shape[1] * shape[2];
+                    ScalarFloat *ptr = m_volume_grid->data();
+
+                    auto resized_data =
+                        std::unique_ptr<ScalarFloat[]>(new ScalarFloat[new_size]);
+                    ScalarFloat *resized_data_ptr = resized_data.get();
+                    for (ScalarUInt32 i = 0; i < size; ++i) {
+                        Float value = dr::load<Float>(ptr);
+                        dr::store(resized_data_ptr, value);
+                        ptr += 1;
+                        resized_data_ptr += 1;
+                    }
+                    m_texture = Texture3f(TensorXf(resized_data.get(), 4, shape),
+                                        m_accel, m_accel, filter_mode, wrap_mode);
+                } else {
+                    m_texture = Texture3f(TensorXf(m_volume_grid->data(), 4, shape),
+                                        m_accel, m_accel, filter_mode, wrap_mode);
+                }
                 m_max = m_volume_grid->max();
                 m_min = m_volume_grid->min();
                 m_avg = m_volume_grid->avg();
@@ -618,12 +639,13 @@ protected:
         // This is the real (user-facing) resolution, but recall
         // that the layout in memory is (Z, Y, X, C).
         const ScalarVector3i full_resolution = resolution();
-        if ((full_resolution.x() % resolution_factor) != 0 ||
-            (full_resolution.y() % resolution_factor) != 0 ||
-            (full_resolution.z() % resolution_factor) != 0) {
-            Throw("Supergrid construction: grid resolution %s must be divisible by %s",
-                full_resolution, resolution_factor);
-        }
+        // lifting this requirement for now. expect errors
+        // if ((full_resolution.x() % resolution_factor) != 0 ||
+        //     (full_resolution.y() % resolution_factor) != 0 ||
+        //     (full_resolution.z() % resolution_factor) != 0) {
+        //     Throw("Supergrid construction: grid resolution %s must be divisible by %s",
+        //         full_resolution, resolution_factor);
+        // }
         const ScalarVector3i resolution(
             full_resolution.x() / resolution_factor,
             full_resolution.y() / resolution_factor,

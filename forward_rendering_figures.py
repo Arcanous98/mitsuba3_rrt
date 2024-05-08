@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import time
 import json
 
-# mi.set_log_level(mi.LogLevel.Debug)
+mi.set_log_level(mi.LogLevel.Debug)
 
 def compute_metrics(reference, target):
     target = torch.tensor(target)
@@ -24,13 +24,15 @@ def compute_metrics(reference, target):
 
 def load_volume_scene(gaussian_count="10k",
                       grid_res=256,
-                      path_env = "./scenes/teapot-full/textures/syferfontein_1d_clear_puresky_4k.exr", 
+                      path_env = "./scenes/teapot-full/textures/venice_sunset_4k.exr", 
                     #   path_env = "./scenes/teapot-full/textures/venice_sunset_4k.exr", syferfontein_1d_clear_puresky_4k rustig_koppie_puresky_4k
                       density_scale=5.0, 
                       albedo=0.99,
                       render_wdas_cloud=False,
                       absorptive_only_test=False,
-                      majorant_res_factor = 1):
+                      majorant_res_factor = 1,
+                      disable_supervoxels = False,
+                      majorant_factor = 1.01):
     
     T = mi.ScalarTransform4f
     t_env = T.scale([0.1, 0.1, 0.1])
@@ -39,9 +41,15 @@ def load_volume_scene(gaussian_count="10k",
         albedo = 0.0
 
     if (not render_wdas_cloud):
-        majorant_res_factor = 1
-        density_scale = 5.0
-        path_vol = join(f'./scenes/volumes/smoke.vol')
+        if disable_supervoxels:
+            majorant_res_factor = 0
+        else:
+            majorant_res_factor = 8 #1 smoke
+        if absorptive_only_test:
+            density_scale = 1.0
+        else:
+            density_scale = 1.0 #5.0 for smoke
+        path_vol = join(f'./scenes/volumes/dust_explosion.vol')
         sensor_dict = {
             'type': 'perspective',
             'fov': 35,
@@ -61,7 +69,7 @@ def load_volume_scene(gaussian_count="10k",
             'absorptive_medium': absorptive_only_test,
             'scale': density_scale,
             'majorant_resolution_factor': majorant_res_factor,
-			"majorant_factor": 1.01,
+			"majorant_factor": majorant_factor,
             # 'albedo': {
             #     'type': 'constvolume',
             #     'value': {'type': 'rgb', 'value': [0.8, 0.9, 0.7]},
@@ -70,15 +78,19 @@ def load_volume_scene(gaussian_count="10k",
                 'type': 'gridvolume',
                 'filename': path_vol,
                 'to_world': medium_T,
+                'override_resolution': False,
             },
             'albedo': albedo,
         }
         
         T_cube = T.scale(1.0)
     else:
-        majorant_res_factor = 8
+        if disable_supervoxels:
+            majorant_res_factor = 0
+        else:
+            majorant_res_factor = 8
         if absorptive_only_test:
-            density_scale = 0.2
+            density_scale = 0.025
         else:
             density_scale = 1.0
         path_vol = join(f'./scenes/volumes/volume_grid_sigmat_{gaussian_count}_{grid_res}.npy')
@@ -113,7 +125,7 @@ def load_volume_scene(gaussian_count="10k",
             'absorptive_medium': absorptive_only_test,
             'scale': density_scale,
             'majorant_resolution_factor': majorant_res_factor,
-			"majorant_factor": 1.01,
+			"majorant_factor": majorant_factor,
             # 'albedo': {
             #     'type': 'constvolume',
             #     'value': {'type': 'rgb', 'value': [0.8, 0.9, 0.7]},
@@ -126,7 +138,7 @@ def load_volume_scene(gaussian_count="10k",
             'albedo': albedo,
         }
         
-        T_cube = T.scale(0.95 * 3000.0)
+        T_cube = T.scale(0.95 * 3000.0) #T.scale(0.95 * 3000.0)
     
     if absorptive_only_test:
         light_source_dict = {
@@ -182,25 +194,37 @@ def render_volume(integrator_name="volpath_novak14",
                  init_time=0,
                  output_dir = "./test_renders/",
                  max_depth = 100,
-                 rr_depth  = 1000):
+                 rr_depth  = 1000,
+                 disable_supervoxels = False, 
+                 reference = False):
 
     output_dir = os.path.join(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
+    if estimator =="ps_cum" or estimator=="ps_cmf":
+        majorant_factor = 1.01
+    else:
+        majorant_factor = 1.01
+
     scene_dict = load_volume_scene(render_wdas_cloud=render_wdas_cloud,
-                                   absorptive_only_test=absorptive_only_test)
+                                   absorptive_only_test=absorptive_only_test,
+                                   majorant_factor = majorant_factor,
+                                   disable_supervoxels = disable_supervoxels)
     scene = mi.load_dict(scene_dict)
-    
+    if reference:
+        addendum = "_reference"
+    else:
+        addendum = ""
     if render_wdas_cloud:
         if integrator_name == "volpath":
-            output_name = output_dir+"disney_cloud_"+integrator_name+"_"+str(spp)+".exr"
+            output_name = output_dir+"disney_cloud_"+integrator_name+"_"+str(spp)+addendum+".exr"
             integrator =  mi.load_dict({
                         'type': integrator_name,
                         'max_depth': max_depth,
                         'rr_depth': rr_depth,
                     })
         else:
-            output_name = output_dir+"disney_cloud_"+integrator_name+"_"+estimator+"_"+distance_sampler+"_"+str(spp)+".exr"
+            output_name = output_dir+"disney_cloud_"+integrator_name+"_"+estimator+"_"+distance_sampler+"_"+str(spp)+addendum+".exr"
             integrator =  mi.load_dict({
                             'type': integrator_name,
                             'max_depth': max_depth,
@@ -210,14 +234,14 @@ def render_volume(integrator_name="volpath_novak14",
                         })
     else:
         if integrator_name == "volpath":
-                output_name = output_dir+"smoke_"+integrator_name+"_"+str(spp)+".exr"
+                output_name = output_dir+"smoke_"+integrator_name+"_"+str(spp)+addendum+".exr"
                 integrator =  mi.load_dict({
                             'type': integrator_name,
                             'max_depth': max_depth,
                             'rr_depth': rr_depth,
                         })
         else:
-            output_name = output_dir+"smoke_"+integrator_name+"_"+estimator+"_"+distance_sampler+"_"+str(spp)+".exr"
+            output_name = output_dir+"smoke_"+integrator_name+"_"+estimator+"_"+distance_sampler+"_"+str(spp)+addendum+".exr"
             integrator =  mi.load_dict({
                             'type': integrator_name,
                             'max_depth': max_depth,
@@ -253,8 +277,11 @@ def run_experiment(asset = "cloud",
     
     estimators = ["rt", "rrt", "rt_local", "rrt_local", "nf", "rm", "ps_cum", "ps_cmf"]
     samplers   = ["ff_weighted_local"]
-    spp_counts = [8]
-    run_count  = 1
+    spp_counts = [1]
+    # We want to normalize rendering time lookups to get roughly equal comparisons
+    spp_scalers = [1, 1, 32, 32, 32, 1, 2, 4, 16]
+    reference_spp = 512
+    run_count  = 10
     results_txt = {}
 
     if asset == "cloud":
@@ -262,20 +289,27 @@ def run_experiment(asset = "cloud",
     else:
         render_wdas_cloud = False
 
-    __, reference = render_volume(integrator_name="volpath",
+    exp_name = "reference_volpath" + "_" + str(reference_spp)
+    init_time = time.time()
+    loading_time, reference = render_volume(integrator_name="volpath",
                                 estimator="",
                                 distance_sampler="",
-                                init_time=0,
+                                init_time=init_time,
                                 absorptive_only_test = absorptive_only_test,
                                 render_wdas_cloud = render_wdas_cloud, 
                                 run_count = 1,
-                                spp = 128,
-                                output_dir = output_dir)
+                                disable_supervoxels = True,
+                                spp = reference_spp,
+                                output_dir = output_dir,
+                                reference = True)
+    rendering_time = (time.time() - init_time)
+    rendering_time_reference = (rendering_time - loading_time)
+    results_txt[exp_name] = {'render_time': rendering_time_reference}
 
-    for estimator in estimators:
+    for i, estimator in enumerate(estimators):
         for sampler in samplers:
             for spp in spp_counts:
-                exp_name = estimator + "_" + sampler + "_" + str(spp)
+                exp_name = estimator + "_" + sampler + "_" + str(spp * spp_scalers[i])
                 init_time = time.time()
                 loading_time, img = render_volume(integrator_name="volpath_novak14",
                                                 estimator=estimator,
@@ -284,7 +318,7 @@ def run_experiment(asset = "cloud",
                                                 absorptive_only_test = absorptive_only_test,
                                                 render_wdas_cloud = render_wdas_cloud, 
                                                 run_count = run_count,
-                                                spp = spp,
+                                                spp = spp * spp_scalers[i],
                                                 output_dir = output_dir)
                 rendering_time = (time.time() - init_time) 
                 rendering_time_per_run  = (rendering_time - loading_time) / run_count
@@ -294,16 +328,16 @@ def run_experiment(asset = "cloud",
                                          'rmse': rmse}
                                          
     for spp in spp_counts:
-        exp_name = "delta_tracking_track_length_local_majorants" + "_" + str(spp)
+        exp_name = "delta_tracking_track_length_local_majorants" + "_" + str(spp * spp_scalers[-1])
         init_time = time.time()
         loading_time, img = render_volume(integrator_name="volpath",
-                                    estimator=estimator,
-                                    distance_sampler=sampler,
+                                    estimator="",
+                                    distance_sampler="",
                                     init_time=init_time,
                                     absorptive_only_test = absorptive_only_test,
                                     render_wdas_cloud = render_wdas_cloud, 
                                     run_count = run_count,
-                                    spp = spp,
+                                    spp = spp  * spp_scalers[-1],
                                     output_dir = output_dir)
         rendering_time = (time.time() - init_time) 
         rendering_time_per_run  = (rendering_time - loading_time) / run_count
@@ -315,7 +349,7 @@ def run_experiment(asset = "cloud",
     if render_wdas_cloud:
         output_dir_txt = output_dir+"/results_cloud.txt"
     else:
-        output_dir_txt = output_dir+"/results_smoke.txt"
+        output_dir_txt = output_dir+"/results_"+asset+".txt"
     with open(output_dir_txt,"w") as file:
         keys = list(results_txt)
         for exp in range(len(keys)):
@@ -324,5 +358,5 @@ def run_experiment(asset = "cloud",
             print('\n', file=file)
 
 if __name__ == '__main__':
-    run_experiment(asset = "smoke",
-                   experiment = "high_albedo")
+    run_experiment(asset = "dust_explosion", #dust_explosion
+                   experiment = "absorption") #high_albedo

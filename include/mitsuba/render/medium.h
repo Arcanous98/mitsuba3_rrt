@@ -14,7 +14,7 @@ template <typename Float, typename Spectrum>
 class MI_EXPORT_LIB Medium : public Object {
 public:
     MI_IMPORT_TYPES(PhaseFunction, MediumPtr, Sampler, Scene, Texture, Volume);
-
+    using Vector16f = dr::Array<Float, 16>;
     /// Intersects a ray with the medium's bounding box
     virtual std::tuple<Mask, Float, Float>
     intersect_aabb(const Ray3f &ray) const = 0;
@@ -31,6 +31,8 @@ public:
     std::tuple<Float, Vector3f, Vector3f>
     prepare_dda_traversal(const Volume *majorant_grid, const Ray3f &ray,
                           Float mint, Float maxt, Mask active) const;
+    
+    Vector16f piecewise_maj(const Ray3f &ray, Mask active) const;
 
     virtual UnpolarizedSpectrum
     get_control_sigma_t(const MediumInteraction3f &mi,

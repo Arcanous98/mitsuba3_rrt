@@ -32,4 +32,5 @@ __pycache__
 /test_renders*
 /absorption_exp_figures*
 /high_albedo_exp_figures*
+/dust_explosion_abs*
 # test_render.py

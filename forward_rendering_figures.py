@@ -24,7 +24,7 @@ def compute_metrics(reference, target):
 
 def load_volume_scene(gaussian_count="10k",
                       grid_res=256,
-                      path_env = "./scenes/teapot-full/textures/venice_sunset_4k.exr", 
+                      path_env = "./scenes/cloud_10_512/belfast_sunset_puresky_4k.exr", 
                     #   path_env = "./scenes/teapot-full/textures/venice_sunset_4k.exr", syferfontein_1d_clear_puresky_4k rustig_koppie_puresky_4k
                       density_scale=5.0, 
                       albedo=0.99,
@@ -46,10 +46,11 @@ def load_volume_scene(gaussian_count="10k",
         else:
             majorant_res_factor = 8 #1 smoke
         if absorptive_only_test:
-            density_scale = 1.0
+            density_scale = 5.0
         else:
-            density_scale = 1.0 #5.0 for smoke
-        path_vol = join(f'./scenes/volumes/dust_explosion.vol')
+            density_scale = 5.0 #5.0 for smoke
+        
+        path_vol = join(f'./scenes/volumes/smoke.vol')
         sensor_dict = {
             'type': 'perspective',
             'fov': 35,
@@ -58,8 +59,8 @@ def load_volume_scene(gaussian_count="10k",
             'to_world': T.look_at(origin=np.array([0,0,4]), target=np.array([0,0,0]), up=np.array([0,1,0])),
             'film': {
                 'type': 'hdrfilm',
-                'width': 800,
-                'height': 800,
+                'width': 1600,
+                'height': 1600,
                 'filter': { 'type': 'gaussian' },
             }
         }
@@ -93,9 +94,26 @@ def load_volume_scene(gaussian_count="10k",
             density_scale = 0.025
         else:
             density_scale = 1.0
-        path_vol = join(f'./scenes/volumes/volume_grid_sigmat_{gaussian_count}_{grid_res}.npy')
+        path_vol = join(f'./scenes/volumes/dust_1024_2.npy')#join(f'./scenes/cloud_10_512/wdas_cloud_16_g40clustered10_vol512/data/root.volume_shape.interior.sigma_t.data.npy') #join(f'./scenes/volumes/root.volume_shape.interior.sigma_t.data.npy')
+        path_albedo_vol = join(f'./scenes/cloud_10_512/wdas_cloud_16_g40clustered10_vol512/data/root.volume_shape.interior.albedo.data.npy') # join(f'./scenes/volumes/root.volume_shape.interior.albedo.data.npy')
+        to_world_dust = T([
+                     [2.6822874546051025, 0.0, 0.0, -1.3411437273025513],
+                     [0.0, 2.6822874546051025, 0.0, -1.3411437273025513],
+                     [0.0, 0.0, 2.6822874546051025, -1.3411437273025513],
+                     [0.0, 0.0, 0.0, 1.0],
+                 ])
+        to_world_dust_out = T([
+             [1.2740864753723145, 0.0, 0.0, 0.0],
+             [0.0, 1.2740864753723145, 0.0, 0.0],
+             [0.0, 0.0, 1.2740864753723145, 0.0],
+             [0.0, 0.0, 0.0, 1.0],
+         ])
+
+        # path_vol = join(f'./scenes/volumes/volume_grid_sigmat_{gaussian_count}_{grid_res}.npy')
         grid = np.load(path_vol)
         grid = mi.cuda_ad_rgb.TensorXf(grid)
+        grid_albedo = np.load(path_albedo_vol)
+        grid_albedo = mi.cuda_ad_rgb.TensorXf(grid_albedo)
         to_world_grid = mi.ScalarTransform4f(np.load(join(f'./scenes/volumes/volume_grid_to_world_{gaussian_count}_{grid_res}.npy')))
         bsphere = mi.ScalarBoundingSphere3f([-50.9844, -14.5577, 7.01233], 960.642)
 
@@ -107,23 +125,44 @@ def load_volume_scene(gaussian_count="10k",
             width  = 1360
             height = 720
 
+        r = 4.7
+        phi = 20
+        width = 1024
         sensor_dict = {
-            'type': 'perspective',
-            'fov': fov,
-            'near_clip': 0.0001,
-            'far_clip': 1000000.0,
-            'to_world': T.look_at(origin=origin, target=target, up=up).rotate([0,0,1],90).rotate([1,0,0],-0.7).rotate([0,1,0],-0.5),
-            'film': {
-                'type': 'hdrfilm',
-                'width': width,
-                'height': height,
-                'filter': { 'type': 'gaussian' },
-            }
+                'type': 'perspective',
+                'fov': 25,
+                'to_world': T.look_at(
+                    origin=[r*np.sin(phi*np.pi/180), -1, r*np.cos(phi*np.pi/180)],
+                    target=[0.0, 0.0, 0.0],
+                    up=[0.0, 1.0, 0.0],
+                ),
+                'film': {
+                    'type': 'hdrfilm',
+                    'width': width,
+                    'height': int(width*.7),
+                    'filter': {
+                        'type': 'box',
+                    },
+                    'pixel_format': 'rgb',
+                },
         }
+        # sensor_dict = {
+        #     'type': 'perspective',
+        #     'fov': fov,
+        #     'near_clip': 0.0001,
+        #     'far_clip': 1000000.0,
+        #     'to_world': T.look_at(origin=origin, target=target, up=up).rotate([0,0,1],90).rotate([1,0,0],-0.7).rotate([0,1,0],-0.5),
+        #     'film': {
+        #         'type': 'hdrfilm',
+        #         'width': width,
+        #         'height': height,
+        #         'filter': { 'type': 'gaussian' },
+        #     }
+        # }
         medium_dict = {
             'type': 'heterogeneous',
             'absorptive_medium': absorptive_only_test,
-            'scale': density_scale,
+            # 'scale': density_scale,
             'majorant_resolution_factor': majorant_res_factor,
 			"majorant_factor": majorant_factor,
             # 'albedo': {
@@ -133,9 +172,20 @@ def load_volume_scene(gaussian_count="10k",
             'sigma_t': {
                 'type': 'gridvolume',
                 'data': grid,
-                'to_world': to_world_grid,
+                'to_world': to_world_dust,
             },
-            'albedo': albedo,
+            # 'albedo': {
+            #     'type': 'gridvolume',
+            #     'data': grid_albedo,
+            #     'to_world': to_world_dust,
+            # },
+            'albedo': 0.1,
+            'scale': 20.0,
+            'phase': {
+                'type': 'hg',
+                'g': 0.0,
+            },
+            # 'albedo': albedo,
         }
         
         T_cube = T.scale(0.95 * 3000.0) #T.scale(0.95 * 3000.0)
@@ -149,7 +199,7 @@ def load_volume_scene(gaussian_count="10k",
         light_source_dict = {
             'type': 'envmap',
             'filename': path_env,
-            'to_world': t_env,
+            'to_world': T.rotate([0, 1, 0], -20.),#'to_world': t_env,
             'scale': 1.0,
         }
     return {
@@ -161,6 +211,7 @@ def load_volume_scene(gaussian_count="10k",
         # Mostly just to avoid the warning
         'integrator': {
             'type': 'path',
+            # 'max_depth': 16,
         },
         # -------------------- Light --------------------
         # 'light': {
@@ -178,7 +229,7 @@ def load_volume_scene(gaussian_count="10k",
                 'type': 'ref',
                 'id':  'medium1'
             },
-            'to_world': T_cube, 
+            'to_world': to_world_dust_out,# T_cube, 
         },
     }
 
@@ -193,7 +244,7 @@ def render_volume(integrator_name="volpath_novak14",
                  spp=1,
                  init_time=0,
                  output_dir = "./test_renders/",
-                 max_depth = 100,
+                 max_depth = 16, #100
                  rr_depth  = 1000,
                  disable_supervoxels = False, 
                  reference = False):
@@ -275,13 +326,15 @@ def run_experiment(asset = "cloud",
         os.makedirs(output_dir, exist_ok=True)
         absorptive_only_test = False
     
-    estimators = ["rt", "rrt", "rt_local", "rrt_local", "nf", "rm", "ps_cum", "ps_cmf"]
+    # estimators = ["rt", "rrt", "rt_local", "rrt_local", "nf", "rm", "ps_cum", "ps_cmf"]
+    # samplers   = ["ff_weighted_local"]
+    estimators = ["rrt_local"]
     samplers   = ["ff_weighted_local"]
     spp_counts = [1]
     # We want to normalize rendering time lookups to get roughly equal comparisons
-    spp_scalers = [1, 1, 32, 32, 32, 1, 2, 4, 16]
-    reference_spp = 512
-    run_count  = 10
+    spp_scalers = [1, 1, 4, 4, 4, 1, 2, 2, 1]
+    reference_spp = 16
+    run_count  = 1
     results_txt = {}
 
     if asset == "cloud":
@@ -298,7 +351,7 @@ def run_experiment(asset = "cloud",
                                 absorptive_only_test = absorptive_only_test,
                                 render_wdas_cloud = render_wdas_cloud, 
                                 run_count = 1,
-                                disable_supervoxels = True,
+                                disable_supervoxels = False,
                                 spp = reference_spp,
                                 output_dir = output_dir,
                                 reference = True)
@@ -338,7 +391,8 @@ def run_experiment(asset = "cloud",
                                     render_wdas_cloud = render_wdas_cloud, 
                                     run_count = run_count,
                                     spp = spp  * spp_scalers[-1],
-                                    output_dir = output_dir)
+                                    output_dir = output_dir,
+                                    disable_supervoxels = True)
         rendering_time = (time.time() - init_time) 
         rendering_time_per_run  = (rendering_time - loading_time) / run_count
         mse, rmse = compute_metrics(reference, img)
@@ -358,5 +412,5 @@ def run_experiment(asset = "cloud",
             print('\n', file=file)
 
 if __name__ == '__main__':
-    run_experiment(asset = "dust_explosion", #dust_explosion
-                   experiment = "absorption") #high_albedo
+    run_experiment(asset = "cloud", #dust_explosion
+                   experiment = "high_albedo") #high_albedo

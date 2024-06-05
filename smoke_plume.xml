@@ -1,0 +1,69 @@
+<scene version="3.0.0">
+	<default name="integrator" value="volpath_novak14" />
+	<default name="spp" value="1" />
+	<default name="resy" value="800" />
+	<default name="resx" value="800" />
+	<default name="max_depth" value="1000" />
+	<integrator type="$integrator">
+		<integer name="max_depth" value="$max_depth" />
+		<string name="transmittance_estimator" value="rrt_local"/>
+		<string name="distance_sampler" value="ff_weighted_local"/>
+	</integrator>
+	<sensor type="perspective">
+		<float name="fov" value="35" />
+		<transform name="to_world">
+			<lookat origin="0, 0, 4" target="0, 0, 0" up="0, 1, 0"/>
+		</transform>
+		<sampler type="independent">
+			<integer name="sample_count" value="$spp" />
+		</sampler>
+		<film type="hdrfilm">
+			<integer name="width" value="$resx" />
+			<integer name="height" value="$resy" />
+			<string name="file_format" value="openexr" />
+			<string name="pixel_format" value="rgb" />
+			<rfilter type="tent" />
+		</film>
+	</sensor>
+	<bsdf type="twosided" id="FloorBSDF">
+		<bsdf type="diffuse">
+			<texture name="reflectance" type="checkerboard">
+				<rgb name="color1" value="0.325, 0.31, 0.25" />
+				<rgb name="color0" value="0.725, 0.71, 0.68" />
+				<transform name="to_uv">
+					<scale x="10.000000" y="10.000000" />
+				</transform>
+			</texture>
+		</bsdf>
+	</bsdf>
+	<shape type="cube">
+		<transform name="to_world">
+			<matrix value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1" />
+		</transform>
+		<bsdf type="null"/>
+		<medium type="heterogeneous" name="interior">
+			<!-- <boolean name="sample_emitters" value="false"/> -->
+			<float name="albedo" value="0.8"/>
+			<boolean name="absorptive_medium" value="true"/>
+			<integer name="majorant_resolution_factor" value="8"/>
+			<float name="majorant_factor" value="1.01"/>
+			<volume type="gridvolume" name="sigma_t">
+				<string name="filename" value="../volumes/smoke.vol"/>
+				<transform name="to_world">
+					<matrix value="2 0 0 -1 0 2 0 -1 0 0 2 -1 0 0 0 1" />
+				</transform>
+			</volume>
+			<float name="scale" value="5"/>
+		</medium>
+	</shape>
+	<!-- <emitter type="envmap">
+		<transform name="to_world">
+			<matrix value="-0.922278 0 0.386527 0 0 1 0 0 -0.386527 0 -0.922278 1.17369 0 0 0 1" />
+		</transform>
+		<string name="filename" value="textures/syferfontein_1d_clear_puresky_4k.exr" />
+	</emitter> -->
+	<emitter type="constant">
+		<!-- <boolean name="hide_emitters" value="true"/> -->
+		<rgb name="radiance" value="1.0"/>
+	</emitter>
+</scene>

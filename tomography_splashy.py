@@ -170,7 +170,7 @@ def render_volume(integrator_name="volpath_novak14",
                  save_results=True,
                  spp=1,
                  init_time=0,
-                 output_dir = "./dust_explosion_abs/",
+                 output_dir = "./dust_explosion_test/",
                  max_depth = 1000,
                  rr_depth  = 1000,
                  disable_supervoxels = False,
@@ -230,7 +230,7 @@ def render_views():
     estimator = "rrt"
     sampler   = "ff"
     reference_spp = 32
-    num_views  = 100
+    num_views  = 1
 
     init_time = time.time()
     _ = render_volume(  integrator_name="volpath_novak14",

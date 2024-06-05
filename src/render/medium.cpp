@@ -544,7 +544,6 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
         Float m = combined_extinction[0]; // default control mu is the average of volume densities
         dr::Loop<Mask> loop("Ratio Tracking Estimator");
         loop.put(T, t, mei, TotalTr, active_tracking, m, sp.state, sp.inc);
-        // sampler->loop_put(loop);
         loop.init();
         while (loop(dr::detach(active_tracking))){
             // Float sample = sampler->next_1d(active_tracking);
@@ -556,7 +555,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
 
             dr::masked(mei.t, exceeded_limits) =  dr::Infinity<Float>;
             dr::masked(mei.p, exceeded_limits) =  ray(mei.t);
-            dr::masked(TotalTr, exceeded_limits) = Spectrum(T);
+            dr::masked(TotalTr, exceeded_limits) = dr::clamp(T, 0.f, 1.f);
 
             dr::masked(mei.p, active_tracking) = ray(t);
             std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_tracking);
@@ -588,7 +587,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
 
             dr::masked(mei.t, exceeded_limits) =  dr::Infinity<Float>;
             dr::masked(mei.p, exceeded_limits) =  ray(mei.t);
-            dr::masked(TotalTr, exceeded_limits) =  Tr*Tc;
+            dr::masked(TotalTr, exceeded_limits) =  dr::clamp(Tr * Tc, 0.f, 1.f);
             
             dr::masked(mei.p, active_tracking) = ray(t);
             std::tie(mei.sigma_s, mei.sigma_n, mei.sigma_t) = get_scattering_coefficients(mei, active_tracking);
@@ -651,7 +650,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
 
             dr::masked(mei.t, escaped) =  dr::Infinity<Float>;
             dr::masked(mei.p, escaped) =  ray(mei.t);
-            dr::masked(TotalTr, escaped) = T; 
+            dr::masked(TotalTr, escaped) = dr::clamp(T, 0.f, 1.f); 
         }
     } else if (estimator_selector == 3) {
         // Residual Ratio Tracking \w local majorants and local control coefficients
@@ -716,7 +715,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
             active_tracking &= !escaped; 
             dr::masked(mei.t, escaped) =  dr::Infinity<Float>;
             dr::masked(mei.p, escaped) =  ray(mei.t);
-            dr::masked(TotalTr, escaped) = Tr*Tc; 
+            dr::masked(TotalTr, escaped) = dr::clamp(Tr * Tc, 0.f, 1.f); 
         }
     } else if (estimator_selector == 4) {
         // Next Flight Estimator
@@ -731,7 +730,7 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
         //     T *= dr::exp(- segment_length * piecewise_majorant[i]);
         // }
         Spectrum T = dr::exp(- max_delta_t * combined_extinction);
-        Float m = combined_extinction[0]; // default control mu is the average of volume densities
+        Float m = combined_extinction[0]; 
         dr::Loop<Mask> loop("Next Flight Estimator");
         loop.put(T, t, tau_accum_f, mei, TotalTr, active_tracking, sp.state, sp.inc);
         loop.init();
@@ -757,14 +756,13 @@ Medium<Float, Spectrum>::integrate_tr(const Ray3f &ray,
     } else if (estimator_selector == 5){
         // Ray Marching (Biased)
         Spectrum combined_extinction = get_majorant(mei, active_tracking);
-        Float m = combined_extinction[0]; // default control mu is the average of volume densities
+        Float m = combined_extinction[0];
         Spectrum T(0.f);
         Float step = 1.f / m;
         dr::Loop<Mask> loop("Ray Marching Estimator");
         loop.put(t, T, step, mei, TotalTr, active_tracking, m, sp.state, sp.inc);
         loop.init();
         while (loop(dr::detach(active_tracking))){
-            // Float sample = sampler->next_1d(active_tracking);
             dr::masked(step, active_tracking) = dr::minimum(step, maxt - t);
 
             Float jump = t + sp.template next_float<Float>(active_tracking) * step;
